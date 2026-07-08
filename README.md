@@ -1,0 +1,101 @@
+# 🧠 Thinker — Physical Routing Model (PRM)
+
+> An experimental design for a non-neural-network language model that trains entirely forward, without backpropagation.
+
+---
+
+## What Is This?
+
+This repository documents the design thinking behind **PRM — the Physical Routing Model**, a from-scratch alternative architecture for language models. The core idea: instead of neural networks with backpropagation, use a *physical routing metaphor* — balls (tokens) falling through a grid of adjustable nails — where the correct answer acts as a **magnet** guiding the system during training.
+
+No gradients. No backward pass. One forward pass, real-time correction.
+
+---
+
+## The Core Metaphor
+
+```
+  Input tokens → balls of different sizes (size = frequency weight)
+  Model internals → grid of nails (tilt = routing weight, diameter = bias)
+  Training signal → magnet at the correct output slot
+  Output → vocabulary slot collecting the most ball-mass wins
+```
+
+Balls fall simultaneously, interact with each other (gravitational attraction at distance, elastic collision up close), and are routed by nails that nudge themselves toward the correct answer as each ball passes — during the forward pass itself.
+
+---
+
+## Key Innovations
+
+| Feature | How It Works |
+|---|---|
+| **No backpropagation** | Nails update locally as balls pass — correction force is applied forward |
+| **No learned embeddings** | Token weight = corpus frequency, pre-computed once |
+| **No attention matrix** | Token relationships emerge from physical ball-to-ball forces |
+| **No positional encoding** | Sequence position = ball entry x-position; proximity = interaction strength |
+| **Natural language prior** | Output slot width ∝ token frequency — common words are geometrically easier to produce |
+| **Natural sparsity** | Open-border diamond grid lets irrelevant balls fall off the edges |
+
+---
+
+## The Diamond Grid
+
+The grid is **diamond-shaped** with open borders:
+
+```
+  ● ● ● ● ●         ← input tokens (balls)
+      ↓
+  ┌─────────┐        ← narrow entry
+   \       /
+    \     /          ← WIDENING: divergent thinking
+     \   /              (balls explore, can fall off edges)
+      \ /
+      / \
+     /   \           ← NARROWING: convergent summarization
+    /     \              (weak signals crowded out)
+  └─────────┘        ← narrow output
+  [vocab slots]
+```
+
+- **Widening phase** = brainstorming, exploring meaning space
+- **Narrowing phase** = summarizing, committing to an answer
+- **Open edges** = natural forgetting; irrelevant context balls fall off
+- **W:N ratio** (widening rows : narrowing rows) is a tunable hyperparameter
+
+---
+
+## Role-Based Specialists
+
+Multiple diamonds can run as **role specialists** — each trained on a *cognitive style*, not a knowledge domain:
+
+| Role | Diamond Shape | Cognitive Style |
+|---|---|---|
+| Analyst | W:N = 1:1, thick nails | Logical, step-by-step |
+| Generator | W:N = 3:1, thin nails | Creative, exploratory |
+| Synthesizer | W:N = 1:3, medium nails | Compression, abstraction |
+| Precisionist | W:N = 1:4, very thick nails | Exact, minimal inference |
+| Narrator | W:N = 2:2, mixed nails | Sequential explanation |
+| Conversationalist | W:N = 2:1, thin nails | Context-aware, adaptive |
+
+A **router diamond** (shallower, cheaper) selects the best role for each input. For ≤3 specialists, run all in parallel and pick the highest retained-ball-mass winner. For >3, the pre-selector is more efficient.
+
+---
+
+## Files
+
+| File | Contents |
+|---|---|
+| [`model-insight.md`](./model-insight.md) | Full design document — all architecture decisions, diagrams, training loops, open questions, prior art comparison |
+| [`thinking-process.md`](./thinking-process.md) | Raw conversation log — how each design decision was reached, turn by turn |
+
+---
+
+## Status
+
+🟡 **Conceptual** — design thinking only. No implementation yet.
+
+Open questions remain (grid depth, nail initialization, force decay, training stabilization). The thinking continues.
+
+---
+
+*Co-designed by sppfizer + GitHub Copilot (Claude Sonnet 4.6) — 2026-07-08*
