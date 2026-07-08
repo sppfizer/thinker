@@ -7,6 +7,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PRM.Core", "src\PRM\PRM.Cor
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PRM.App", "src\PRM\PRM.App\PRM.App.csproj", "{E0A2E5B3-9F0B-4CB7-8CF6-43D56B54A4B7}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{DC42F3D3-37D4-4028-9C17-2926C918A612}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "PRM", "PRM", "{E15E6733-26CB-4794-BAD9-43B1E382B27B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PRM.Viz", "src\PRM\PRM.Viz\PRM.Viz.csproj", "{5AA36317-5B77-435A-AE0D-1400FDCAEA66}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,8 +27,16 @@ Global
 		{E0A2E5B3-9F0B-4CB7-8CF6-43D56B54A4B7}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E0A2E5B3-9F0B-4CB7-8CF6-43D56B54A4B7}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E0A2E5B3-9F0B-4CB7-8CF6-43D56B54A4B7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5AA36317-5B77-435A-AE0D-1400FDCAEA66}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5AA36317-5B77-435A-AE0D-1400FDCAEA66}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5AA36317-5B77-435A-AE0D-1400FDCAEA66}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5AA36317-5B77-435A-AE0D-1400FDCAEA66}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{E15E6733-26CB-4794-BAD9-43B1E382B27B} = {DC42F3D3-37D4-4028-9C17-2926C918A612}
+		{5AA36317-5B77-435A-AE0D-1400FDCAEA66} = {E15E6733-26CB-4794-BAD9-43B1E382B27B}
 	EndGlobalSection
 EndGlobal

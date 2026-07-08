@@ -271,19 +271,18 @@ Three grid shape options were considered and ranked:
         Input tokens (balls drop here)
            ● ● ○ ● ●  ○  ●
            | | | | |  |  |
-    ┌──────┴─┴─┴─┴─┴──┴──┴──────┐   ← narrow entry
-    │   ⊕   ⊕   ⊕   ⊕   ⊕   ⊕  │
-     \  ⊕  ⊕   ⊕   ⊕   ⊕  ⊕   /
-      \ ⊕   ⊕   ⊕   ⊕   ⊕  ⊕  /    ← WIDENING PHASE
-       \⊕  ⊕   ⊕   ⊕   ⊕  ⊕  /       (divergent thinking)
-        ⊕   ⊕   ⊕   ⊕   ⊕  ⊕         balls can fall off
-        ⊕   ⊕   ⊕   ⊕   ⊕            at widest = max exploration
-       /⊕  ⊕   ⊕   ⊕   ⊕  \
-      / ⊕   ⊕   ⊕   ⊕   ⊕  \    ← NARROWING PHASE
-     /  ⊕  ⊕   ⊕   ⊕   ⊕   \       (convergent summarization)
-    │   ⊕   ⊕   ⊕   ⊕   ⊕   │       weak balls fall off edges
-    └────────────────────────┘   ← narrow output
-       [vocab slots — winner]
+           ┌──────────┐         ← narrow entry  (entryWidth = vocab × spacing)
+           │⊕ ⊕ ⊕ ⊕ ⊕│
+          /  ⊕  ⊕  ⊕  \
+         /  ⊕  ⊕  ⊕  ⊕  \      ← WIDENING PHASE
+        /  ⊕  ⊕  ⊕  ⊕  ⊕  \     (divergent thinking — explore meaning space)
+       ⊕   ⊕   ⊕   ⊕   ⊕   ⊕    balls can fall off open edges at widest point
+       ⊕   ⊕   ⊕   ⊕   ⊕        = max exploration / max context mixing
+        \  ⊕  ⊕  ⊕  ⊕  /      ← NARROWING PHASE
+         \  ⊕  ⊕  ⊕  ⊕  /       (convergent summarization — focus, decide)
+          \  ⊕  ⊕  ⊕  /        weak-signal balls fall off contracting edges
+           └──────────┘         ← narrow output  (vocab slots — winner)
+        [the][a][sat][on]...
 ```
 
 **Balls that drift to the open edges fall out** — they are gone. Only balls that remain in active routing lanes contribute to the output.

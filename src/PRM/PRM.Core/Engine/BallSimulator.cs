@@ -112,6 +112,100 @@ public class BallSimulator
         return active;
     }
 
+    /// <summary>
+    /// Like Simulate but records ball positions at every row for visualisation.
+    /// Returns a GridTrace with geometry + trajectory data; does NOT apply training.
+    /// </summary>
+    public GridTrace SimulateWithTrace(List<Ball> inputBalls)
+    {
+        int totalRows = _cfg.TotalRows;
+
+        var gridLefts      = new float[totalRows];
+        var gridRights     = new float[totalRows];
+        var nailBaseXsList = new float[totalRows][];
+        var nailOffXsList  = new float[totalRows][];
+        var nailOffYsList  = new float[totalRows][];
+        var rowNailCounts  = new int[totalRows];
+        var rowFrames      = new PRM.Core.Models.BallFrame[totalRows + 1][];
+
+        // Deep-copy input balls so the original state is unchanged
+        var active = inputBalls.Select(b =>
+            new Ball(b.TokenId, b.Position, b.Mass, b.ContextPosition)).ToList();
+
+        for (int row = 0; row < totalRows; row++)
+        {
+            gridLefts[row]  = LeftBorder(row);
+            gridRights[row] = RightBorder(row);
+            int nailCount   = _rowCols[row];
+            rowNailCounts[row] = nailCount;
+
+            // Snapshot BEFORE deflection (entry position for this row)
+            rowFrames[row] = active.Select(b =>
+                new PRM.Core.Models.BallFrame(b.TokenId, b.Position, b.Velocity, b.Mass, b.ContextPosition)).ToArray();
+
+            // Record nail base positions + averaged offset across active balls
+            var baseXs = new float[nailCount];
+            var offXs  = new float[nailCount];
+            var offYs  = new float[nailCount];
+            for (int c = 0; c < nailCount; c++)
+            {
+                baseXs[c] = NailBaseX(row, c);
+                if (active.Count > 0)
+                {
+                    foreach (var b in active)
+                    {
+                        int tIdx = TokenIndex(b);
+                        if (tIdx < _tokenOffX.GetLength(2))
+                        {
+                            offXs[c] += _tokenOffX[row, c, tIdx];
+                            offYs[c] += _tokenOffY[row, c, tIdx];
+                        }
+                    }
+                    offXs[c] /= active.Count;
+                    offYs[c] /= active.Count;
+                }
+            }
+            nailBaseXsList[row] = baseXs;
+            nailOffXsList[row]  = offXs;
+            nailOffYsList[row]  = offYs;
+
+            // Apply physics (no training)
+            foreach (var ball in active) ApplyNailDeflection(ball, row);
+            if (_cfg.GravityG > 0f || _cfg.CollisionRadius > 0f) ApplyBallInteractions(active);
+
+            const float MaxVel = 5f;
+            float left  = LeftBorder(row);
+            float right = RightBorder(row);
+            foreach (var ball in active)
+            {
+                if (float.IsNaN(ball.Velocity) || float.IsInfinity(ball.Velocity)) ball.Velocity = 0f;
+                ball.Velocity  = Math.Clamp(ball.Velocity, -MaxVel, MaxVel);
+                ball.Position += ball.Velocity * _cfg.DeltaTime;
+                if (float.IsNaN(ball.Position) || float.IsInfinity(ball.Position))
+                    ball.Position = (left + right) / 2f;
+            }
+            active.RemoveAll(b => b.Position < left || b.Position > right);
+        }
+
+        // Final snapshot: positions after all rows (output positions)
+        rowFrames[totalRows] = active.Select(b =>
+            new PRM.Core.Models.BallFrame(b.TokenId, b.Position, b.Velocity, b.Mass, b.ContextPosition)).ToArray();
+
+        return new PRM.Core.Models.GridTrace
+        {
+            TotalRows      = totalRows,
+            WideningRows   = _cfg.WideningRows,
+            MaxWidth       = _cfg.MaxWidth,
+            GridLefts      = gridLefts,
+            GridRights     = gridRights,
+            NailBaseXs     = nailBaseXsList,
+            NailOffXs      = nailOffXsList,
+            NailOffYs      = nailOffYsList,
+            RowNailCounts  = rowNailCounts,
+            RowFrames      = rowFrames,
+        };
+    }
+
     // ── Grid geometry ─────────────────────────────────────────────────────────
 
     public float GridWidth(int row)
@@ -159,9 +253,10 @@ public class BallSimulator
         float offY   = _tokenOffY[row, col, tIdx];
         float radius = _nails[row, col].Radius;
 
-        // IDF inverse-mass scale: rare tokens (low mass) deflect more
-        // (they carry more discriminative information than common tokens like "the")
-        float idf = 1f / Math.Max(ball.Mass, 0.01f);
+        // No IDF scaling in deflection: all balls route by nail position alone.
+        // IDF belongs only in training updates (rare tokens get stronger nail nudges).
+        // With IDF in deflection, rare balls fly to extreme positions and miss all output slots.
+        float idf = 1f;
 
         // Horizontal position change (width-normalised to prevent overshooting)
         float rowWidth  = Math.Max(GridWidth(row), 1f);

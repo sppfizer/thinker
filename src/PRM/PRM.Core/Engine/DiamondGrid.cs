@@ -75,6 +75,16 @@ public class DiamondGrid
         return Score(survivors, balls);
     }
 
+    /// <summary>
+    /// Forward pass that also records the full trajectory for visualisation.
+    /// Returns the GridTrace with ball positions at every row.
+    /// </summary>
+    public GridTrace SimulateWithTrace(int[] inputTokenIds)
+    {
+        var balls = CreateBalls(inputTokenIds);
+        return _simulator.SimulateWithTrace(balls);
+    }
+
     // ── Training ──────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -203,8 +213,10 @@ public class DiamondGrid
             // Map grid coord → slot coord
             float norm = (ball.Position - gridLeft) / gridSpan * totalSlotSpan;
 
-            // IDF weight: rare tokens are more informative → get proportionally more vote weight
-            float weight = 1f / Math.Max(ball.Mass, 0.01f);
+            // Flat weight: 1 vote per ball regardless of rarity.
+            // IDF belongs in the training nudge (rare tokens get stronger nail updates),
+            // not here — otherwise rare balls dominate every prediction regardless of routing.
+            const float weight = 1f;
 
             for (int t = 0; t < _vocab.Length; t++)
             {

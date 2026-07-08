@@ -20,7 +20,8 @@ public static class AutoOptimizer
         float TuneLR,
         int   TrainEpochs,
         int   TuneEpochs,
-        float WideningRatio = 0.70f);   // fraction of total rows that are widening (thinking)
+        float WideningRatio = 0.70f,  // fraction of total rows that are widening (thinking)
+        int   TrainPasses   = 1);     // how many times to re-run the full training set before eval
 
     // ── Entry point ───────────────────────────────────────────────────────────
 
@@ -70,7 +71,7 @@ public static class AutoOptimizer
                 $"[{iter,4}] {arrow} val={valAcc:P1} test={testAcc:P1} | " +
                 $"rows={cand.Config.WideningRows}/{cand.Config.NarrowingRows}({cand.WideningRatio:P0}w) " +
                 $"α={cand.Config.DeflectionAlpha:F2} αY={cand.Config.DeflectionAlphaY:F2} " +
-                $"sp={cand.Config.NailSpacing:F1} r={cand.Config.DefaultRadius:F2} LR={cand.LR:F3} ep={cand.TrainEpochs}+{cand.TuneEpochs}" +
+                $"sp={cand.Config.NailSpacing:F1} r={cand.Config.DefaultRadius:F2} LR={cand.LR:F3} ep={cand.TrainEpochs}×{cand.TrainPasses}+{cand.TuneEpochs}" +
                 jumpTag);
 
             if (valAcc > bestVal)
@@ -150,8 +151,14 @@ public static class AutoOptimizer
         var grid   = new DiamondGrid(hp.Config, vocab, new Random(42));
         var router = new SpecialistRouter(new[] { grid });
 
-        var trainer = new TrainingMode(router) { LearningRate = hp.LR, EpochCount = hp.TrainEpochs, LrDecayPerEpoch = 0.97f };
-        foreach (var _ in trainer.Run(trainSet)) { }
+        // Multiple forward passes: each pass reinforces nail positions from the previous pass.
+        // Later passes act as fine-tuning on an already partially-learned structure.
+        for (int pass = 0; pass < hp.TrainPasses; pass++)
+        {
+            float passLR = hp.LR * MathF.Pow(0.85f, pass); // slight LR decay between passes
+            var trainer = new TrainingMode(router) { LearningRate = passLR, EpochCount = hp.TrainEpochs, LrDecayPerEpoch = 0.97f };
+            foreach (var _ in trainer.Run(trainSet)) { }
+        }
 
         if (hp.TuneEpochs > 0)
         {
@@ -194,8 +201,9 @@ public static class AutoOptimizer
         float alphaY    = cfg.DeflectionAlphaY;
         float radius    = cfg.DefaultRadius;
         float spacing   = cfg.NailSpacing;
+        int   passes    = best.TrainPasses;
 
-        var pool = Enumerable.Range(0, 14).ToList();
+        var pool = Enumerable.Range(0, 15).ToList();
         Shuffle(pool, rng);
 
         for (int p = 0; p < nParams; p++)
@@ -205,7 +213,15 @@ public static class AutoOptimizer
             switch (pool[p])
             {
                 // Total depth — more rows = more routing steps = more memory
-                case 0:  totalRows = Clamp((int)(totalRows * f), 6, 100);          break;
+                // When rows grow, scale up epochs proportionally so the model still converges
+                case 0:
+                {
+                    int oldRows = totalRows;
+                    totalRows = Clamp((int)(totalRows * f), 6, 200);
+                    if (totalRows > oldRows)
+                        trEp = Clamp((int)(trEp * ((float)totalRows / oldRows)), 10, 500);
+                    break;
+                }
                 // Widening ratio — 0.70 = 70% thinking, 30% summarising
                 case 1:  wRatio    = Clamp(wRatio + d, 0.30f, 0.85f);              break;
                 case 2:  alpha     = Clamp(alpha  * f, 0.1f, 3.0f);               break;
@@ -225,6 +241,8 @@ public static class AutoOptimizer
                 case 12: alphaY    = Clamp(alphaY * f, 0.0f, 0.8f);              break;
                 // NailSpacing — smaller = more nails per row = finer resolution
                 case 13: spacing   = Clamp(spacing * f, 0.5f, 3.0f);             break;
+                // TrainPasses — multiple forward re-passes through the training set
+                case 14: passes    = Clamp((int)Math.Round(passes * f), 1, 5);   break;
             }
         }
 
@@ -250,7 +268,7 @@ public static class AutoOptimizer
             InputWindowSize  = cfg.InputWindowSize,
         };
 
-        return new HyperParams(newCfg, lr, tuneLr, trEp, tuEp, wRatio);
+        return new HyperParams(newCfg, lr, tuneLr, trEp, tuEp, wRatio, passes);
     }
 
     private static HyperParams RandomRestart(Random rng, VocabToken[] vocab)
@@ -258,10 +276,16 @@ public static class AutoOptimizer
         float ns         = 2.0f;
         float entryWidth = vocab.Length * ns;
         float mw         = entryWidth * (rng.NextSingle() * 6f + 2f);
-        int   totalRows  = rng.Next(10, 80);
-        float wRatio     = rng.NextSingle() * 0.55f + 0.30f;           // 30–85%
+        // Scale rows and epochs with vocab size so restarts are viable for large vocabs
+        int   minRows    = Math.Max(10, vocab.Length / 8);
+        int   maxRows    = Math.Max(80, vocab.Length / 2);
+        int   totalRows  = rng.Next(minRows, maxRows);
+        float wRatio     = rng.NextSingle() * 0.55f + 0.30f;
         int   wRows      = Math.Max(3, (int)(totalRows * wRatio));
         int   nRows      = Math.Max(3, totalRows - wRows);
+        int   minEp      = Math.Max(30, vocab.Length);
+        int   maxEp      = Math.Max(200, vocab.Length * 3);
+        int   passes     = rng.Next(1, vocab.Length > 60 ? 4 : 2);
 
         var cfg = new DiamondConfig
         {
@@ -281,7 +305,7 @@ public static class AutoOptimizer
         };
 
         float lr = rng.NextSingle() * 0.25f + 0.01f;
-        return new HyperParams(cfg, lr, lr / 8f, rng.Next(30, 200), rng.Next(0, 20), wRatio);
+        return new HyperParams(cfg, lr, lr / 8f, rng.Next(minEp, maxEp), rng.Next(0, 20), wRatio, passes);
     }
 
     // ── Config persistence ────────────────────────────────────────────────────
@@ -289,13 +313,18 @@ public static class AutoOptimizer
     private static HyperParams LoadBest(VocabToken[] vocab)
     {
         float ns       = 2.0f;
-        float minEntry = vocab.Length * ns;     // 40 tokens × 2 = 80 units
-        float maxWidth = minEntry * 4f;         // 4× widening
-        // Start at 70/30 thinking/summarizing split, 30 total rows
-        int   totalRows = 30;
-        float wRatio    = 0.70f;
-        int   wRows     = (int)(totalRows * wRatio);   // 21 widening (thinking)
-        int   nRows     = totalRows - wRows;           //  9 narrowing (summarizing)
+        float minEntry = vocab.Length * ns;
+        float maxWidth = minEntry * 4f;
+
+        // Scale starting config with vocabulary size.
+        // Larger vocab → more routing depth and more training needed.
+        // Rule of thumb: ~1 row per 4 tokens, ~2 epochs per token, 2 passes for large vocabs.
+        int   totalRows  = Math.Clamp(vocab.Length / 4, 30, 150);
+        float wRatio     = 0.75f;
+        int   wRows      = (int)(totalRows * wRatio);
+        int   nRows      = Math.Max(3, totalRows - wRows);
+        int   trainEpoch = Math.Clamp(vocab.Length * 2, 80, 400);
+        int   passes     = vocab.Length > 60 ? 2 : 1;  // multi-pass for larger vocab
 
         var cfg = new DiamondConfig
         {
@@ -304,17 +333,18 @@ public static class AutoOptimizer
             NarrowingRows    = nRows,
             DeflectionAlpha  = 0.6f,
             DeflectionAlphaY = 0.15f,
-            GravityG         = 0.01f,    // ball-to-ball attraction — part of original design
-            CollisionRadius  = 0.5f,     // elastic collision between balls
-            ProximityBand    = 8f,       // max distance for ball interaction
+            GravityG         = 0.01f,
+            CollisionRadius  = 0.5f,
+            ProximityBand    = 8f,
             DefaultRadius    = 0.5f,
             MaxWidth         = maxWidth,
             EntryWidth       = minEntry,
             NailSpacing      = ns,
             InputWindowSize  = 3,
         };
-        return new HyperParams(cfg, LR: 0.15f, TuneLR: 0.02f,
-                               TrainEpochs: 80, TuneEpochs: 10, WideningRatio: wRatio);
+        return new HyperParams(cfg, LR: 0.10f, TuneLR: 0.01f,
+                               TrainEpochs: trainEpoch, TuneEpochs: 10,
+                               WideningRatio: wRatio, TrainPasses: passes);
     }
 
     private static void Save(DiamondConfig cfg)
@@ -333,7 +363,7 @@ public static class AutoOptimizer
             $"α={hp.Config.DeflectionAlpha:F3} αY={hp.Config.DeflectionAlphaY:F3} " +
             $"g={hp.Config.GravityG:F4} radius={hp.Config.DefaultRadius:F3} " +
             $"sp={hp.Config.NailSpacing:F1} MaxW={hp.Config.MaxWidth:F0} " +
-            $"LR={hp.LR:F4} ep={hp.TrainEpochs}+{hp.TuneEpochs}");
+            $"LR={hp.LR:F4} ep={hp.TrainEpochs}×{hp.TrainPasses}+{hp.TuneEpochs}");
     }
 
     // ── Utility ───────────────────────────────────────────────────────────────
