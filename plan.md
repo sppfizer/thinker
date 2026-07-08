@@ -42,6 +42,10 @@
 
 ### 🟡 Visualizer — polish & robustness
 
+- [ ] **Verify viz with controlled Chrome instance** (Puppeteer via Node.js or Playwright):
+  - Launch `PRM.Viz`, then drive a headless/headed Chrome programmatically to
+    open `http://localhost:5050/`, confirm WebSocket connects, confirm frames arrive,
+    take a screenshot to verify balls are visible. This replaces "should work now" guessing.
 - [ ] **Make balls more visible**: increase min radius, brighter colors, stronger glow
 - [ ] **Lighter theme option**: `#1a1a2e` background was preferred — add a toggle or make default lighter
 - [ ] **WebSocket reconnect after new viz** — after `VisualiseSingle` completes and user types new tokens,
