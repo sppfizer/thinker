@@ -68,24 +68,16 @@ Console.WriteLine("Opening browser…");
 try { Process.Start(new ProcessStartInfo($"http://localhost:{port}/") { UseShellExecute = true }); }
 catch { Console.WriteLine("Could not open browser automatically — please open the URL manually."); }
 
-// Wait for browser to connect (accept first two requests: HTML page + WebSocket upgrade)
+// Wait for browser to connect — loops until WebSocket upgrade arrives (handles favicon etc.)
 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 Console.WriteLine("Waiting for browser to connect (30s timeout)…");
-
-// Accept GET for the HTML page
-await server.AcceptOneAsync(cts.Token);
-// Accept WebSocket upgrade
-await server.AcceptOneAsync(cts.Token);
+await server.WaitForClientAsync(cts.Token);
 
 // ── 5. Send config ────────────────────────────────────────────────────────────
+// Use grid.Config (post auto-scale) so browser coordinates match C# physics exactly
 var gridInfo = new DiamondGridInfo(
-    config.TotalRows, config.WideningRows,
-    config.EntryWidth < vocab.Length * config.NailSpacing
-        ? vocab.Length * config.NailSpacing
-        : config.EntryWidth,
-    config.MaxWidth < vocab.Length * config.NailSpacing * 4
-        ? vocab.Length * config.NailSpacing * 4
-        : config.MaxWidth);
+    grid.Config.TotalRows, grid.Config.WideningRows,
+    grid.Config.EntryWidth, grid.Config.MaxWidth);
 
 await server.SendConfigAsync(gridInfo);
 await Task.Delay(300); // let browser process config

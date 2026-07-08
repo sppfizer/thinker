@@ -31,24 +31,39 @@ public sealed class VizServer : IAsyncDisposable
         _http.Start();
     }
 
-    /// <summary>Accept one HTTP request (serves the HTML page) or a WebSocket upgrade.</summary>
-    public async Task AcceptOneAsync(CancellationToken ct)
+    /// <summary>
+    /// Loop accepting HTTP requests until the browser's WebSocket upgrade arrives.
+    /// Serves the HTML page on the first GET /, returns 204 for everything else
+    /// (favicon, robots.txt, etc.) so those requests don't consume the WS slot.
+    /// </summary>
+    public async Task WaitForClientAsync(CancellationToken ct)
     {
-        var ctx = await _http.GetContextAsync().WaitAsync(ct);
+        bool htmlServed = false;
+        while (_wsCtx == null)
+        {
+            var ctx = await _http.GetContextAsync().WaitAsync(ct);
 
-        if (ctx.Request.IsWebSocketRequest)
-        {
-            _wsCtx = await ctx.AcceptWebSocketAsync(subProtocol: null);
-            Console.WriteLine("[viz] WebSocket connected.");
-        }
-        else
-        {
-            // Serve the HTML visualizer
-            var bytes = Encoding.UTF8.GetBytes(_html);
-            ctx.Response.ContentType     = "text/html; charset=utf-8";
-            ctx.Response.ContentLength64 = bytes.Length;
-            await ctx.Response.OutputStream.WriteAsync(bytes, ct);
-            ctx.Response.OutputStream.Close();
+            if (ctx.Request.IsWebSocketRequest)
+            {
+                _wsCtx = await ctx.AcceptWebSocketAsync(subProtocol: null);
+                Console.WriteLine("[viz] WebSocket connected.");
+            }
+            else if (!htmlServed &&
+                     (ctx.Request.Url?.AbsolutePath is "/" or "" or null))
+            {
+                var bytes = Encoding.UTF8.GetBytes(_html);
+                ctx.Response.ContentType     = "text/html; charset=utf-8";
+                ctx.Response.ContentLength64 = bytes.Length;
+                await ctx.Response.OutputStream.WriteAsync(bytes, ct);
+                ctx.Response.OutputStream.Close();
+                htmlServed = true;
+            }
+            else
+            {
+                // favicon.ico, /ws GET-before-upgrade, robots.txt, etc. — discard gracefully
+                ctx.Response.StatusCode = 204;
+                ctx.Response.Close();
+            }
         }
     }
 
