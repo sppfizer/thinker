@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using PRM.Core.Engine;
 using PRM.Core.Models;
 using PRM.Core.Modes;
@@ -20,16 +21,8 @@ foreach (var t in vocab.Take(8))
     Console.WriteLine($"  [{t.Id,2}] '{t.Text,-15}' freq={t.Frequency,3}  mass={t.Mass:F3}  slotW={t.SlotWidth:F2}");
 Console.WriteLine();
 
-// ── 2. Create a specialist (Analyst role for this simple test) ────────────
-var config = new DiamondConfig
-{
-    RoleName = "Analyst",
-    WideningRows = 8,
-    NarrowingRows = 8,
-    MaxWidth = 50f,
-    EntryWidth = 20f,
-    DefaultDiameter = 0.75f
-};
+// ── 2. Load the active configuration ───────────────────────────────────────
+var config = LoadActiveConfig();
 var grid   = new DiamondGrid(config, vocab);
 var router = new SpecialistRouter(new[] { grid });
 
@@ -74,6 +67,7 @@ switch (mode)
             Console.WriteLine($"Epoch {++epoch:D2}  {metrics}");
         }
         grid.SaveNails("prm_nails.bin");
+        SaveActiveConfig(config);
         Console.WriteLine("\nNails saved → prm_nails.bin");
         break;
     }
@@ -101,6 +95,7 @@ switch (mode)
         foreach (var metrics in tuner.Run(tuneSet))
             Console.WriteLine($"Tune epoch {++epoch:D2}  {metrics}");
         grid.SaveNails("prm_nails_tuned.bin");
+        SaveActiveConfig(config);
         Console.WriteLine("\nTuned nails saved → prm_nails_tuned.bin");
         break;
     }
@@ -144,8 +139,15 @@ switch (mode)
         break;
     }
 
+    // ── OPTIMIZE ──────────────────────────────────────────────────────────
+    case "optimize":
+    {
+        RunOptimization(vocab, dataset, trainSet, testSet, tuneSet, valSet);
+        break;
+    }
+
     default:
-        Console.WriteLine($"Unknown mode '{mode}'. Use: train | test | tune | val | benchmark");
+        Console.WriteLine($"Unknown mode '{mode}'. Use: train | test | tune | val | benchmark | optimize");
         break;
 }
 
@@ -175,4 +177,142 @@ static string LoadCorpus()
         the mat was on the floor
         a dog ran near the park
         """;
+}
+
+static void RunOptimization(
+    VocabToken[] vocab,
+    List<(int[] input, int target)> dataset,
+    List<(int[] input, int target)> trainSet,
+    List<(int[] input, int target)> testSet,
+    List<(int[] input, int target)> tuneSet,
+    List<(int[] input, int target)> valSet)
+{
+    var candidates = new[]
+    {
+        new Candidate("baseline", 0.020f, 0.002f, 8, 8, 0.80f, 0.010f, 10f, 0.50f),
+        new Candidate("more-magnet", 0.035f, 0.004f, 10, 10, 0.90f, 0.012f, 12f, 0.45f),
+        new Candidate("tight-routes", 0.015f, 0.0015f, 12, 6, 0.75f, 0.008f, 8f, 0.70f),
+        new Candidate("broad-think", 0.012f, 0.0012f, 14, 8, 0.70f, 0.006f, 7f, 0.85f),
+        new Candidate("sharp-narrow", 0.025f, 0.003f, 6, 14, 0.95f, 0.014f, 14f, 0.35f),
+    };
+
+    Candidate? bestCandidate = null;
+    EpochMetrics? bestVal = null;
+
+    Console.WriteLine($"Optimization sweep: {candidates.Length} candidates");
+    Console.WriteLine("Rule: keep best validation accuracy; rollback worse candidates automatically.");
+    Console.WriteLine();
+
+    foreach (var cand in candidates)
+    {
+        var config = new DiamondConfig
+        {
+            RoleName = "Analyst",
+            WideningRows = cand.WideningRows,
+            NarrowingRows = cand.NarrowingRows,
+            MaxWidth = 50f,
+            EntryWidth = 20f,
+            DefaultDiameter = cand.DefaultDiameter,
+            DeflectionAlpha = cand.DeflectionAlpha,
+            GravityG = cand.GravityG,
+            ProximityBand = cand.ProximityBand,
+            CollisionRadius = cand.CollisionRadius,
+        };
+
+        var grid = new DiamondGrid(config, vocab, new Random(42));
+        var router = new SpecialistRouter(new[] { grid });
+
+        var trainer = new TrainingMode(router) { LearningRate = cand.LearningRate, EpochCount = 4 };
+        foreach (var _ in trainer.Run(trainSet)) { }
+
+        var tuner = new TuneMode(router) { LearningRate = cand.TuneLearningRate, EpochCount = 2 };
+        foreach (var _ in tuner.Run(tuneSet)) { }
+
+        var valResult = new ValMode(router).Run(valSet);
+        var testResult = new TestMode(router).Run(testSet);
+
+        var score = valResult.metrics.Accuracy;
+        var prevBest = bestVal?.Accuracy ?? -1f;
+
+        Console.WriteLine(
+            $"{cand.Name,-12} | trainLR={cand.LearningRate,6:F3} tuneLR={cand.TuneLearningRate,6:F4} " +
+            $"rows={cand.WideningRows,2}/{cand.NarrowingRows,2} alpha={cand.DeflectionAlpha,4:F2} " +
+            $"grav={cand.GravityG,5:F3} diam={cand.DefaultDiameter,4:F2} -> " +
+            $"val={valResult.metrics.Accuracy:P1} test={testResult.Accuracy:P1} conf={valResult.metrics.AvgConfidence:F3}");
+
+        if (score > prevBest)
+        {
+            bestCandidate = cand;
+            bestVal = valResult.metrics;
+            grid.SaveNails("prm_nails_best.bin");
+            Console.WriteLine($"  ↳ new best, rolled forward");
+        }
+        else
+        {
+            Console.WriteLine($"  ↳ worse than best ({prevBest:P1}), rolled back");
+        }
+    }
+
+    Console.WriteLine();
+    if (bestCandidate is null || bestVal is null)
+    {
+        Console.WriteLine("No candidate improved the score.");
+        return;
+    }
+
+    Console.WriteLine($"BEST: {bestCandidate.Name}  val={bestVal.Accuracy:P1}  conf={bestVal.AvgConfidence:F3}");
+    if (File.Exists("prm_nails_best.bin"))
+    {
+        File.Copy("prm_nails_best.bin", "prm_nails.bin", overwrite: true);
+        SaveBestConfig(bestCandidate);
+        Console.WriteLine("Best nails copied → prm_nails.bin");
+    }
+}
+
+static DiamondConfig LoadActiveConfig()
+{
+    const string path = "prm_config.json";
+    if (File.Exists(path))
+    {
+        var json = File.ReadAllText(path);
+        var cfg = JsonSerializer.Deserialize<DiamondConfig>(json);
+        if (cfg is not null)
+            return cfg;
+    }
+
+    return new DiamondConfig
+    {
+        RoleName = "Analyst",
+        WideningRows = 8,
+        NarrowingRows = 8,
+        MaxWidth = 50f,
+        EntryWidth = 20f,
+        DefaultDiameter = 0.75f
+    };
+}
+
+static void SaveActiveConfig(DiamondConfig config)
+{
+    const string path = "prm_config.json";
+    var json = JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
+    File.WriteAllText(path, json);
+}
+
+static void SaveBestConfig(Candidate cand)
+{
+    var cfg = new DiamondConfig
+    {
+        RoleName = "Analyst",
+        WideningRows = cand.WideningRows,
+        NarrowingRows = cand.NarrowingRows,
+        MaxWidth = 50f,
+        EntryWidth = 20f,
+        DefaultDiameter = cand.DefaultDiameter,
+        DeflectionAlpha = cand.DeflectionAlpha,
+        GravityG = cand.GravityG,
+        ProximityBand = cand.ProximityBand,
+        CollisionRadius = cand.CollisionRadius,
+    };
+
+    SaveActiveConfig(cfg);
 }

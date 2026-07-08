@@ -228,6 +228,16 @@ Bottom:
 - Added train/test/tune/val splits and a benchmark mode that reports timing plus accuracy
 - Verified the toy corpus runs through the full pipeline end to end
 
+### Turn 12 — sppfizer
+- Asked for an automatic iterative optimization loop that improves routing/magnet math
+- Wanted live evolution plus rollback when candidates get worse
+
+### Turn 12 — Copilot response
+- Added `optimize` mode with a candidate sweep over magnet strength and diamond geometry
+- Kept the best candidate by validation accuracy and rolled back the others automatically
+- Fixed config persistence so the winning nails and the winning diamond geometry stay together
+- Reran the benchmark on the persisted best state: validation improved from 22.2% to 27.8%
+
 
 
 

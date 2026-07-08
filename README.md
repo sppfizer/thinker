@@ -89,14 +89,15 @@ A **router diamond** (shallower, cheaper) selects the best role for each input. 
 | [`thinking-process.md`](./thinking-process.md) | Raw conversation log — how each design decision was reached, turn by turn |
 | [`PRM-Design.pptx`](./PRM-Design.pptx) | Slide deck version of the brainstorm and model summary |
 | [`PRM.sln`](./PRM.sln) | C# solution containing the PRM.Core library and PRM.App console app |
-| [`src/PRM`](./src/PRM) | Forward-only PRM prototype in C# with training, test, tune, and val modes |
+| [`src/PRM`](./src/PRM) | Forward-only PRM prototype in C# with training, test, tune, val, benchmark, and optimize modes |
 | [`data/simple_corpus.txt`](./data/simple_corpus.txt) | Tiny toy corpus used for the training/test/tune/val benchmark |
+| [`prm_config.json`](./prm_config.json) | Persisted best diamond configuration from the optimizer |
 
 ---
 
 ## Status
 
-🟡 **Conceptual** — design thinking only. No implementation yet.
+🟡 **Prototype** — design plus a runnable toy implementation.
 
 Open questions remain (grid depth, nail initialization, force decay, training stabilization). The thinking continues.
 
