@@ -1,6 +1,5 @@
 using PRM.Core.Engine;
 using PRM.Core.Models;
-using PRM.Core.Modes;
 
 namespace PRM.Core.Modes;
 
@@ -8,13 +7,17 @@ namespace PRM.Core.Modes;
 /// TRAINING MODE — forward pass with live nail updates via magnetic force.
 /// Balls fall through the diamond; nails nudge toward the correct output as each ball passes.
 /// No backward pass. No stored activations. One phase.
+///
+/// LrDecayPerEpoch: multiply LearningRate by this factor at the end of each epoch.
+/// Set to 1.0 to disable decay.  0.97 gives smooth convergence over ~100 epochs.
 /// </summary>
 public class TrainingMode
 {
     private readonly SpecialistRouter _router;
 
-    public float LearningRate { get; set; } = 0.01f;
-    public int   EpochCount   { get; set; } = 1;
+    public float LearningRate    { get; set; } = 0.01f;
+    public int   EpochCount      { get; set; } = 1;
+    public float LrDecayPerEpoch { get; set; } = 1.0f;  // multiply LR each epoch
 
     public TrainingMode(SpecialistRouter router) => _router = router;
 
@@ -22,6 +25,8 @@ public class TrainingMode
         IEnumerable<(int[] inputIds, int targetId)> dataset,
         Action<int, TrainStepResult>? onStep = null)
     {
+        float lr = LearningRate;
+
         for (int epoch = 0; epoch < EpochCount; epoch++)
         {
             int total = 0, correct = 0;
@@ -31,7 +36,7 @@ public class TrainingMode
             foreach (var (inputIds, targetId) in dataset)
             {
                 var (predicted, isCorrect, role, conf) =
-                    _router.Train(inputIds, targetId, LearningRate);
+                    _router.Train(inputIds, targetId, lr);
 
                 total++;
                 if (isCorrect) correct++;
@@ -48,6 +53,10 @@ public class TrainingMode
                 total > 0 ? totalConf / total        : 0f,
                 roleCounts
             );
+
+            // Apply learning rate decay after each epoch
+            lr *= LrDecayPerEpoch;
         }
     }
 }
+

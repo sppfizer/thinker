@@ -9,8 +9,16 @@ Console.WriteLine("║  PRM — Physical Routing Model  v0.1      ║");
 Console.WriteLine("╚══════════════════════════════════════════╝");
 Console.WriteLine();
 
-// ── 1. Build vocabulary from a tiny corpus ────────────────────────────────
-var corpus = LoadCorpus();
+// ── 1. Build vocabulary from corpus ──────────────────────────────────────
+// Optional: pass --corpus <filename> as first two args to pick a different file
+string? corpusFile = null;
+string[] modeArgs  = args;
+if (args.Length >= 2 && args[0] == "--corpus")
+{
+    corpusFile = args[1];
+    modeArgs   = args[2..];
+}
+var corpus = LoadCorpus(corpusFile);
 
 var builder = new VocabularyBuilder();
 builder.Feed(VocabularyBuilder.Tokenise(corpus));
@@ -37,6 +45,15 @@ int window = 3;
 for (int i = 0; i < tokenIds.Length - window; i++)
     dataset.Add((tokenIds[i..(i + window)], tokenIds[i + window]));
 
+// Shuffle so all sentences mix across train/val/test — without this, rare words
+// in the last sentences are never seen during training (sequential split problem).
+var shuffleRng = new Random(42);
+for (int i = dataset.Count - 1; i > 0; i--)
+{
+    int j = shuffleRng.Next(i + 1);
+    (dataset[i], dataset[j]) = (dataset[j], dataset[i]);
+}
+
 int trainCount = Math.Max(1, (int)(dataset.Count * 0.60));
 int testCount  = Math.Max(1, (int)(dataset.Count * 0.20));
 int valCount   = Math.Max(1, dataset.Count - trainCount - testCount);
@@ -51,7 +68,7 @@ Console.WriteLine($"Split: train={trainSet.Count}, test={testSet.Count}, tune={t
 Console.WriteLine();
 
 // ── 4. Mode selection ─────────────────────────────────────────────────────
-var mode = args.Length > 0 ? args[0].ToLower() : "train";
+var mode = modeArgs.Length > 0 ? modeArgs[0].ToLower() : "train";
 Console.WriteLine($"MODE: {mode.ToUpper()}");
 Console.WriteLine(new string('─', 50));
 
@@ -60,15 +77,30 @@ switch (mode)
     // ── TRAINING ─────────────────────────────────────────────────────────
     case "train":
     {
-        var trainer = new TrainingMode(router) { LearningRate = 0.02f, EpochCount = 5 };
-        int epoch = 0;
+        // Allow: dotnet run -- train [epochs] [lr] [decay]
+        int   epochs = modeArgs.Length > 1 ? int.Parse(modeArgs[1])    : 50;
+        float lr     = modeArgs.Length > 2 ? float.Parse(modeArgs[2], System.Globalization.CultureInfo.InvariantCulture) : 0.08f;
+        float decay  = modeArgs.Length > 3 ? float.Parse(modeArgs[3], System.Globalization.CultureInfo.InvariantCulture) : 0.97f;
+        if (File.Exists("prm_nails.bin")) { grid.LoadNails("prm_nails.bin"); Console.WriteLine("Nails loaded — resuming."); }
+        var trainer = new TrainingMode(router) { LearningRate = lr, EpochCount = epochs, LrDecayPerEpoch = decay };
+        int   epoch    = 0;
+        float bestAcc  = -1f;
+        float curLR    = lr;
         foreach (var metrics in trainer.Run(trainSet))
         {
-            Console.WriteLine($"Epoch {++epoch:D2}  {metrics}");
+            Console.WriteLine($"Epoch {++epoch:D3}  {metrics}  LR={curLR:F5}");
+            curLR *= decay;
+            if (metrics.Accuracy > bestAcc)
+            {
+                bestAcc = metrics.Accuracy;
+                grid.SaveNails("prm_nails_best.bin");
+            }
         }
-        grid.SaveNails("prm_nails.bin");
+        // Keep best epoch as active
+        if (File.Exists("prm_nails_best.bin"))
+            File.Copy("prm_nails_best.bin", "prm_nails.bin", overwrite: true);
         SaveActiveConfig(config);
-        Console.WriteLine("\nNails saved → prm_nails.bin");
+        Console.WriteLine($"\nBest train acc={bestAcc:P1} → prm_nails.bin");
         break;
     }
 
@@ -139,24 +171,37 @@ switch (mode)
         break;
     }
 
-    // ── OPTIMIZE ──────────────────────────────────────────────────────────
+    // ── OPTIMIZE (quick 5-candidate sweep, legacy) ────────────────────────────
     case "optimize":
     {
         RunOptimization(vocab, dataset, trainSet, testSet, tuneSet, valSet);
         break;
     }
 
+    // ── AUTOOPTIMIZE (real hill-climbing convergence loop) ────────────────
+    case "autooptimize":
+    {
+        int   maxIter = 500;
+        float target  = 0.60f;
+        AutoOptimizer.Run(vocab, trainSet, tuneSet, valSet, testSet, maxIter, target);
+        break;
+    }
+
     default:
-        Console.WriteLine($"Unknown mode '{mode}'. Use: train | test | tune | val | benchmark | optimize");
+        Console.WriteLine($"Unknown mode '{mode}'. Use: train | test | tune | val | benchmark | optimize | autooptimize");
         break;
 }
 
 Console.WriteLine("\nDone.");
 
-static string LoadCorpus()
+static string LoadCorpus(string? filename = null)
 {
+    filename ??= "tiny_corpus.txt";
     var candidates = new[]
     {
+        Path.Combine(Directory.GetCurrentDirectory(), "data", filename),
+        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "data", filename),
+        // Fallback: full corpus
         Path.Combine(Directory.GetCurrentDirectory(), "data", "simple_corpus.txt"),
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "data", "simple_corpus.txt"),
     };

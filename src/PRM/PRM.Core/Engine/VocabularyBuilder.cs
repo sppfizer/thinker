@@ -51,9 +51,15 @@ public class VocabularyBuilder
         return tokens;
     }
 
-    /// <summary>Simple whitespace tokeniser for quick testing.</summary>
+    /// <summary>
+    /// Tokeniser: lowercases, strips leading/trailing punctuation so "the," → "the".
+    /// Keeps intra-word apostrophes (it's) and hyphens (well-known).
+    /// </summary>
     public static IEnumerable<string> Tokenise(string text)
-        => text.Split(' ', '\n', '\r', '\t')
-               .Select(t => t.Trim().ToLowerInvariant())
-               .Where(t => t.Length > 0);
+    {
+        return text.Split(' ', '\n', '\r', '\t')
+                   .Select(t => t.Trim().ToLowerInvariant())
+                   .Select(t => t.Trim('.', ',', '!', '?', ';', ':', '"', '\'', '(', ')', '[', ']'))
+                   .Where(t => t.Length > 0);
+    }
 }

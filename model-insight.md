@@ -818,3 +818,80 @@ output: ŷ = argmax(score)
 
 No magnet. No nail updates. Purely deterministic routing.
 
+---
+
+## 11. Implementation Status & Findings (as of 2026-07-08)
+
+### 11.1 Architecture (Current State)
+
+- **Diamond grid**: widening rows (thinking) + narrowing rows (summarising)
+- **Key finding**: 83% widening / 17% narrowing ratio consistently outperforms 50/50 — more thinking layers = better routing capacity
+- **Staggered hexagonal nail layout**: even rows at x = 0, 2, 4 …; odd rows at x = 1, 3, 5 … (NailSpacing = 2.0 default)
+- Each nail carries: 2D unit-circle offset vector (`offX`, `offY` per token per position), Radius (influence), Resistance (bias against update)
+- **Auto-scaling**: grid `EntryWidth` is auto-scaled to `vocab.Length × NailSpacing` — ensures exactly 1 nail per token at the output row.  Before this fix there were only 10 nails for 40 tokens, so the model structurally could not differentiate most tokens.
+
+---
+
+### 11.2 Ball (Token) Physics
+
+| Property | Value | Meaning |
+|---|---|---|
+| Mass | log-normalised corpus frequency | Common tokens are heavier |
+| Entry position | Context window position | Geometric positional encoding |
+| Velocity | 0 initial; updated by nail Y-offsets and ball interactions | Horizontal momentum accumulator |
+
+- **IDF-weighted voting**: vote weight = 1/mass — rare tokens are more discriminative; common tokens like "the" contribute less.  Without this, "the" dominated every slot.
+- **Position-aware routing**: each ball carries its context-window position (0, 1, 2 …); nail offsets stored per-position × per-token: `offX[row, col, pos × V + tokenId]`.  "cat" at position 0 routes independently from "cat" at position 2.
+- **Ball-to-ball interaction**: gravity (attraction) + elastic collision between nearby balls — true context sensitivity; combined ball positions produce emergent routing paths.  Was previously frozen at G = 0 because the optimizer used multiplicative perturbation starting from 0.
+
+---
+
+### 11.3 Training
+
+- **Forward-only**: balls fall through grid while nails are nudged toward the target output slot (magnet force)
+- **No backpropagation** — nails update in-place during the single forward pass
+- LR decay per epoch (default 0.97) prevents oscillation at the unit-circle boundary
+- Best-epoch nails saved and restored on validation drop (rollback)
+
+---
+
+### 11.4 Results
+
+| Metric | Value |
+|---|---|
+| Best validation accuracy | **33.3%** on 40-token toy corpus (87 training samples) |
+| Before fixes | 5.8% |
+| Random baseline (1/40) | 2.5% |
+| Improvement over random | **13×** |
+
+#### Key bugs fixed
+
+| # | Bug | Fix |
+|---|---|---|
+| 1 | Grid too narrow (10 nails for 40 tokens) | Auto-scale EntryWidth = vocab × NailSpacing |
+| 2 | "the" dominated every vote (mass-weighted) | IDF fix: vote weight = 1/mass |
+| 3 | Probe ball (tokenId = -1) had mass 0.001 → IDF weight 1000× | Exclude probe ball from IDF voting |
+| 4 | Ball gravity frozen at 0 via multiplicative perturbation | Changed to additive perturbation for G and collision |
+| 5 | Sequential train/val split → rare words never seen in training | Shuffle dataset before split |
+| 6 | Ball velocities explode from repeated elastic collisions | Clamp velocity to ±5; NaN/Infinity guard in NailColumn |
+
+---
+
+### 11.5 Optimisation Findings
+
+- Hill-climbing auto-optimiser with 500 iterations, random restarts, global best tracking
+- Explores: TotalRows, WideningRatio, α, αY, gravity G, collision R, NailSpacing, MaxWidth, LR, epochs
+- **WideningRatio converges to 79–83%** consistently — confirms: think more, summarise less
+- Preferred NailSpacing: 1.8–1.9 (slightly tighter than default 2.0)
+- More epochs needed for convergence at this scale: 80–130 vs early default of 30
+
+---
+
+### 11.6 Next Steps
+
+- [ ] Larger corpus (more tokens, more samples) to stress-test routing capacity
+- [ ] Verify ball-interaction (gravity now enabled) improves accuracy further
+- [ ] Position-aware routing validation: does context position 0 vs 2 produce meaningfully different nail offsets after training?
+- [ ] Extend to multi-token generation (loop prediction)
+- [ ] Eventually: real text corpora beyond the toy 40-token set
+

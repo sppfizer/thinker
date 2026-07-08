@@ -242,3 +242,54 @@ Bottom:
 
 
 ---
+
+## Implementation Learnings
+
+### Critical Bugs Discovered (and Fixed)
+
+1. **Grid too narrow** — EntryWidth defaulted to a small fixed value, giving ~10 nails for a 40-token vocabulary.  The model structurally could not differentiate most tokens because many shared the same output slot.  *Fix*: auto-scale `EntryWidth = vocab.Length × NailSpacing`.
+
+2. **Mass-weighted IDF voting** — common tokens ("the", "a", "is") were heavy balls → won most slot votes → model predicted "the" for almost everything.  *Fix*: invert to IDF weighting (vote weight = 1/mass); rare tokens are more discriminative.
+
+3. **Probe ball IDF explosion** — the prediction probe ball has mass 0.001 → 1/mass = 1000 → massively outweighed real tokens.  *Fix*: exclude probe ball (tokenId = -1) from IDF voting entirely.
+
+4. **Gravity frozen at 0** — the hill-climbing optimizer used multiplicative perturbations; multiplying 0 by any factor stays 0.  G and CollisionRadius could never escape their zero initial values.  *Fix*: switched to additive perturbation for these parameters.
+
+5. **Sequential train/val split** — with a small corpus sorted by sentence order, rare tokens only appeared toward the end and were split entirely into val/test.  Training never saw them.  *Fix*: shuffle the dataset before splitting.
+
+6. **Ball velocity explosion** — elastic collisions between many balls can add velocity repeatedly per row, making velocities grow without bound → positions become Infinity/NaN → `NailColumn` returned garbage array indices → `IndexOutOfRangeException`.  *Fix*: clamp velocity to ±5 after each integration step; guard `NailColumn` against NaN/Infinity inputs.
+
+---
+
+### What the Optimizer Found
+
+After fixing the additive-perturbation bug (so G and collision could actually be explored):
+
+- **WideningRatio converges to 79–83%** across independent restarts — more thinking rows = better routing capacity
+- **NailSpacing prefers 1.8–1.9** (slightly tighter than the default 2.0) — denser nail coverage improves discrimination
+- **More epochs needed**: convergence at this scale requires 80–130 epochs, not the earlier default of 30
+- Gravity (G ≈ 0.01) and collision (R ≈ 0.5) both contribute; disabling either slightly hurts accuracy
+
+---
+
+### Current Accuracy Milestone
+
+| Metric | Value |
+|---|---|
+| Best validation accuracy | **33.3%** on 40-token toy corpus |
+| Training samples | 87 |
+| Random baseline (1/40 tokens) | 2.5% |
+| Model performance | **13× above random** |
+
+Before the grid-sizing, IDF, and split fixes the model achieved only 5.8% — well below what would be expected from a functional routing model.
+
+---
+
+### Next Steps
+
+- Ball interaction (gravity now enabled after additive-perturbation fix) — validate it improves accuracy beyond 33.3%
+- Larger corpus: more tokens and more samples to test routing capacity at scale
+- Position-aware routing validation: confirm that context positions 0 vs 2 develop distinct nail offsets
+- Multi-token generation loop (predict → append → predict again)
+- Eventually: real text corpora beyond the toy 40-token set
+
