@@ -653,3 +653,168 @@ Phase 5: Repeat phases 2-4 until convergence
 ---
 
 *Document continues as thinking progresses — see `thinking-process.md` for conversation log.*
+
+---
+
+## 10. Mathematical Formulation (GPU-Parallelisable)
+
+### 10.1 State Representation
+
+At row `r`, each surviving ball `i` has state:
+
+```
+Ball_i = ( x_i,  v_i,  m_i )
+          pos   vel   mass
+```
+
+Each nail at `(r, c)` has:
+
+```
+Nail[r][c] = ( tilt[r][c],  diameter[r][c] )
+               ∈ [-1, 1]     ∈ (0, 1]
+```
+
+---
+
+### 10.2 Diamond Geometry
+
+```
+width(r) = w_0 + r · e                          if r ≤ W_rows   (widening)
+width(r) = w_max − (r − W_rows) · c             if r > W_rows   (narrowing)
+
+left_border(r)  = (grid_max_width − width(r)) / 2
+right_border(r) = left_border(r) + width(r)
+```
+
+Parameters: `w_0` = entry width, `e` = expansion rate, `c` = contraction rate.
+
+---
+
+### 10.3 Ball–Nail Deflection
+
+At each row, ball `i` deflects based on the nearest nail column `c = round(x_i / nail_spacing)`:
+
+```
+Δx_i  =  tilt[r, c]  ·  α  ·  (1 / m_i)
+```
+
+- `α` = base deflection constant
+- Heavier balls deflect less (physical inertia)
+- Updated position: `x_i  ←  x_i + Δx_i`
+
+---
+
+### 10.4 Ball–Ball Gravitational Attraction
+
+For each pair `(i, j)` at the same row:
+
+```
+d_ij   =  |x_i − x_j|
+F_ij   =  G · m_i · m_j / (d_ij² + ε)         (ε prevents singularity)
+Δx_i  +=  F_ij · sign(x_j − x_i) · dt         (attracted toward j)
+```
+
+**GPU optimisation:** compute only within a proximity band `d_ij < D_max` — reduces O(n²) to O(n·k) where k is average neighbours in band.
+
+---
+
+### 10.5 Ball–Ball Elastic Collision
+
+When `d_ij < r_collision`:
+
+```
+v_i' = ((m_i − m_j)·v_i + 2·m_j·v_j) / (m_i + m_j)
+v_j' = ((m_j − m_i)·v_j + 2·m_i·v_i) / (m_i + m_j)
+```
+
+Heavier ball changes velocity less; lighter ball deflects more.
+
+---
+
+### 10.6 Open Border Removal
+
+After each row:
+
+```
+if  x_i < left_border(r)  or  x_i > right_border(r):
+    remove ball i  (no longer participates in output)
+```
+
+Ball still applied its nail nudge to every row it reached before exit.
+
+---
+
+### 10.7 Training — Magnet Force & Nail Update
+
+Magnet centre = x-position of target token's vocabulary slot: `x_T`.
+
+Phase-aware magnet force at row `r` for ball at position `x`:
+
+```
+depth_frac_W = r / W_rows                         (widening phase, 0→1)
+depth_frac_N = (r − W_rows) / N_rows              (narrowing phase, 0→1)
+
+f_widening(r, x, x_T)  = (x_T − x) · (1 − depth_frac_W)   [fan: force weakens as we widen]
+f_narrowing(r, x, x_T) = (x_T − x) · depth_frac_N          [focus: force strengthens as we narrow]
+
+f(r, x, x_T) = f_widening   if r ≤ W_rows
+               f_narrowing   if r > W_rows
+```
+
+Nail update when ball `i` passes nail `(r, c)`:
+
+```
+tilt[r, c]  +=  η  ·  m_i  ·  f(r, x_i, x_T)  ·  (1 / diameter[r, c])
+```
+
+- `η` = learning rate
+- Heavier ball → larger update
+- Thicker nail → smaller update (more resistant)
+- Rare target token → small slot → stronger magnet force → bigger update
+
+---
+
+### 10.8 Output Scoring
+
+Each vocabulary token `t` occupies slot range `[slot_left_t, slot_right_t]` where width ∝ `log(freq_t)`.
+
+```
+score[t]  =  Σ_i  m_i · 𝟙[ x_i ∈ [slot_left_t, slot_right_t] ]
+
+ŷ  =  argmax_t( score[t] )
+```
+
+---
+
+### 10.9 GPU Parallelism Map
+
+| Operation | Parallel axis | Complexity |
+|---|---|---|
+| Ball–nail deflection per row | Balls (independent per row) | O(B) per row |
+| Nail updates per row | Nails (independent per row) | O(C) per row |
+| Ball–ball gravity | Pairs within proximity band | O(B·k) per row |
+| Open border removal | Balls (independent) | O(B) per row |
+| Output scoring | Balls (parallel reduce into slots) | O(B·log V) |
+| Training batch | Samples (independent) | O(S) outer loop |
+
+Total: `O(S · R · (B·k + C))` — no stored activation graph, no backward pass.
+
+> `S` = batch size, `R` = total rows, `B` = surviving balls per row, `k` = avg gravity neighbours, `C` = nail columns per row.
+
+---
+
+### 10.10 Inference (Fixed Grid)
+
+At inference time, all `tilt` and `diameter` arrays are frozen. The loop is:
+
+```
+for each row r:
+    apply deflection:   x_i += tilt[r, round(x_i)] · α / m_i
+    apply gravity:      x_i += Σ_j F_ij · dt        (within band)
+    apply collisions:   update velocities for crossing pairs
+    remove out-of-bounds balls
+output: ŷ = argmax(score)
+```
+
+No magnet. No nail updates. Purely deterministic routing.
+

@@ -87,6 +87,9 @@ A **router diamond** (shallower, cheaper) selects the best role for each input. 
 |---|---|
 | [`model-insight.md`](./model-insight.md) | Full design document — all architecture decisions, diagrams, training loops, open questions, prior art comparison |
 | [`thinking-process.md`](./thinking-process.md) | Raw conversation log — how each design decision was reached, turn by turn |
+| [`PRM-Design.pptx`](./PRM-Design.pptx) | Slide deck version of the brainstorm and model summary |
+| [`PRM.sln`](./PRM.sln) | C# solution containing the PRM.Core library and PRM.App console app |
+| [`src/PRM`](./src/PRM) | Forward-only PRM prototype in C# with training, test, tune, and val modes |
 
 ---
 

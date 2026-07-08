@@ -205,6 +205,19 @@ Bottom:
   - Synthesizer role → deep narrowing phase (compression-heavy)
 - The role IS the shape — geometry + training data together define the specialist
 
+### Turn 10 — sppfizer
+- Requested a PowerPoint version of the brainstorm in the repo
+- Asked to translate the physical model into fast GPU/CPU math
+- Asked to create a C# application with training, test, tune, and val modes
+- Inference stays straightforward because the diamond grids are fixed and balls just fall through
+
+### Turn 10 — Copilot response
+- Generated `PRM-Design.pptx` and synced it with the repository contents
+- Added a formal math model section to `model-insight.md` describing state, diamond geometry, deflection, gravity, collisions, magnet force, scoring, and GPU parallelism
+- Created a C# solution scaffold with `PRM.Core` and `PRM.App`
+- Implemented the app modes: training, test, tune, and val
+- Kept the inference path fixed-grid and forward-only: no magnet, no updates, just ball routing
+
 
 
 
