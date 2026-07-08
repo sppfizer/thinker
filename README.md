@@ -90,6 +90,7 @@ A **router diamond** (shallower, cheaper) selects the best role for each input. 
 | [`PRM-Design.pptx`](./PRM-Design.pptx) | Slide deck version of the brainstorm and model summary |
 | [`PRM.sln`](./PRM.sln) | C# solution containing the PRM.Core library and PRM.App console app |
 | [`src/PRM`](./src/PRM) | Forward-only PRM prototype in C# with training, test, tune, and val modes |
+| [`data/simple_corpus.txt`](./data/simple_corpus.txt) | Tiny toy corpus used for the training/test/tune/val benchmark |
 
 ---
 

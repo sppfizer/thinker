@@ -218,6 +218,16 @@ Bottom:
 - Implemented the app modes: training, test, tune, and val
 - Kept the inference path fixed-grid and forward-only: no magnet, no updates, just ball routing
 
+### Turn 11 — sppfizer
+- Asked for a more visual PowerPoint: diamond structure, ball size, nail size, and magnet-path effects
+- Asked for a very simple LLM-free training set and a train/test/tune/val/benchmark flow
+
+### Turn 11 — Copilot response
+- Added a new visual mechanics slide to the PPT deck with big/small ball and thick/thin nail comparisons plus magnet path arrows
+- Switched the app to load a tiny corpus from `data/simple_corpus.txt`
+- Added train/test/tune/val splits and a benchmark mode that reports timing plus accuracy
+- Verified the toy corpus runs through the full pipeline end to end
+
 
 
 

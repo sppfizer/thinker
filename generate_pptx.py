@@ -327,10 +327,60 @@ for i,(title, col, items) in enumerate(props):
         txbox(s, "▸  "+item, 6.2, y+0.45+j*0.34, 6.6, 0.32, size=13, color=WHITE)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SLIDE 7 — Role Specialists
+# SLIDE 7 — Visual Mechanics
 # ─────────────────────────────────────────────────────────────────────────────
 s = add_slide(); bg(s)
-section_header(s, "06", "Role-Based Specialist Diamonds")
+section_header(s, "06A", "Visual Mechanics — Balls, Nails, Magnet Paths")
+
+visual_panels = [
+    ("Ball size = token weight", ACCENT, 0.35, 0.85, 3.95, 5.95),
+    ("Nail thickness = bias/stability", ACCENT2, 4.45, 0.85, 4.25, 5.95),
+    ("Magnet follows the diamond", GREEN, 8.9, 0.85, 4.05, 5.95),
+]
+for title, col, x, y, w, h in visual_panels:
+    rect(s, x, y, w, h, fill=RGBColor(0x08,0x1E,0x30))
+    rect(s, x, y, w, 0.4, fill=col)
+    txbox(s, title, x+0.1, y+0.05, w-0.2, 0.3, size=14, bold=True, color=BG, align=PP_ALIGN.CENTER)
+
+# Ball size panel
+txbox(s, "BIG BALL", 0.55, 1.35, 1.6, 0.3, size=12, bold=True, color=ACCENT2)
+txbox(s, "●", 0.55, 1.65, 1.6, 1.0, size=56, bold=True, color=ACCENT2, align=PP_ALIGN.CENTER)
+txbox(s, "heavy token\nhigh frequency\nstronger pull", 0.55, 2.75, 1.6, 0.9, size=12, color=LIGHT, align=PP_ALIGN.CENTER)
+txbox(s, "SMALL BALL", 2.55, 1.35, 1.6, 0.3, size=12, bold=True, color=GREEN)
+txbox(s, "○", 2.55, 1.65, 1.6, 1.0, size=56, bold=True, color=GREEN, align=PP_ALIGN.CENTER)
+txbox(s, "rare token\nlow frequency\nlighter path", 2.55, 2.75, 1.6, 0.9, size=12, color=LIGHT, align=PP_ALIGN.CENTER)
+rect(s, 0.55, 4.1, 3.3, 1.1, fill=RGBColor(0x05,0x28,0x45))
+txbox(s, "Massive balls hit nails harder\nand influence routing more.", 0.65, 4.22, 3.1, 0.9, size=14, bold=True, color=WHITE, align=PP_ALIGN.CENTER)
+
+# Nail thickness panel
+txbox(s, "THICK NAIL", 4.65, 1.35, 1.8, 0.3, size=12, bold=True, color=ACCENT2)
+txbox(s, "┃", 4.85, 1.65, 1.4, 1.2, size=68, bold=True, color=ACCENT2, align=PP_ALIGN.CENTER)
+txbox(s, "high bias\nstable routing\nhard to move", 4.65, 2.85, 1.8, 1.0, size=12, color=LIGHT, align=PP_ALIGN.CENTER)
+txbox(s, "THIN NAIL", 6.75, 1.35, 1.6, 0.3, size=12, bold=True, color=GREEN)
+txbox(s, "|", 7.05, 1.65, 0.9, 1.2, size=68, bold=True, color=GREEN, align=PP_ALIGN.CENTER)
+txbox(s, "low bias\nflexible routing\neasy to nudge", 6.75, 2.85, 1.6, 1.0, size=12, color=LIGHT, align=PP_ALIGN.CENTER)
+rect(s, 4.65, 4.1, 3.8, 1.1, fill=RGBColor(0x05,0x28,0x45))
+txbox(s, "Thicker nails resist change.\nThinner nails learn faster.", 4.75, 4.22, 3.6, 0.9, size=14, bold=True, color=WHITE, align=PP_ALIGN.CENTER)
+
+# Magnet path panel
+txbox(s, "WIDEN", 9.1, 1.35, 0.8, 0.3, size=12, bold=True, color=ACCENT)
+txbox(s, "↙  ↓  ↘", 9.1, 1.65, 2.8, 0.6, size=28, bold=True, color=ACCENT, align=PP_ALIGN.CENTER)
+txbox(s, "MID", 9.1, 2.4, 0.8, 0.3, size=12, bold=True, color=ACCENT2)
+txbox(s, "←  ←  ↓  →  →", 9.1, 2.7, 3.0, 0.6, size=22, bold=True, color=ACCENT2, align=PP_ALIGN.CENTER)
+txbox(s, "NARROW", 9.1, 3.45, 1.1, 0.3, size=12, bold=True, color=GREEN)
+txbox(s, "↘  ↓  ↙", 9.1, 3.75, 2.8, 0.6, size=28, bold=True, color=GREEN, align=PP_ALIGN.CENTER)
+rect(s, 9.2, 4.5, 2.8, 0.95, fill=RGBColor(0x05,0x28,0x45), line=GREEN)
+txbox(s, "Magnet fans outward\nthen focuses inward\nto the target slot.", 9.3, 4.62, 2.6, 0.75, size=12, color=WHITE, align=PP_ALIGN.CENTER)
+
+divider(s, 6.95)
+txbox(s, "Visual rule:  big ball + thick nail + focused magnet path = stronger, more stable routing signal",
+      0.4, 7.0, 12.4, 0.35, size=13, color=LIGHT, italic=True, align=PP_ALIGN.CENTER)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SLIDE 8 — Role Specialists
+# ─────────────────────────────────────────────────────────────────────────────
+s = add_slide(); bg(s)
+section_header(s, "07", "Role-Based Specialist Diamonds")
 
 txbox(s, "Specialists are trained on cognitive ROLES, not knowledge domains",
       0.4, 0.75, 12.4, 0.45, size=17, bold=True, color=ACCENT2, align=PP_ALIGN.CENTER)
@@ -375,10 +425,10 @@ for i,(role,wn,nd,style) in enumerate(roles):
         txbox(s, txt, x, y+0.06, w, 0.32, size=12, color=WHITE)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SLIDE 8 — Routing / Specialists
+# SLIDE 9 — Routing / Specialists
 # ─────────────────────────────────────────────────────────────────────────────
 s = add_slide(); bg(s)
-section_header(s, "07", "Routing Strategy — Selecting the Right Specialist")
+section_header(s, "08", "Routing Strategy — Selecting the Right Specialist")
 
 for col,(title,col_fill,items,note) in enumerate([
     ("Parallel  (≤ 3 specialists)", ACCENT, [
@@ -414,10 +464,10 @@ txbox(s, "Manual role labeling recommended for production — role = cognitive s
       0.4, 5.6, 12.4, 0.45, size=14, bold=True, color=ACCENT2)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SLIDE 9 — Math Model
+# SLIDE 10 — Math Model
 # ─────────────────────────────────────────────────────────────────────────────
 s = add_slide(); bg(s)
-section_header(s, "08", "Mathematical Formulation")
+section_header(s, "09", "Mathematical Formulation")
 
 rect(s, 0.3, 0.75, 12.7, 5.85, fill=RGBColor(0x05,0x18,0x2A))
 math_lines = [
@@ -440,10 +490,10 @@ for i,(label, formula) in enumerate(math_lines):
     txbox(s, formula, 2.45, y+0.06, 10.4, 0.34, size=12, color=WHITE)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SLIDE 10 — GPU/CPU Mapping
+# SLIDE 11 — GPU/CPU Mapping
 # ─────────────────────────────────────────────────────────────────────────────
 s = add_slide(); bg(s)
-section_header(s, "09", "GPU / CPU Parallelism Strategy")
+section_header(s, "10", "GPU / CPU Parallelism Strategy")
 
 for col,(hw, col_fill, ops) in enumerate([
     ("GPU  — Massively Parallel", ACCENT, [
@@ -475,10 +525,10 @@ txbox(s, "Key advantage:  no activation graph storage (no backprop) → GPU memo
       0.4, 6.82, 12.4, 0.4, size=13, color=GREEN, italic=True, align=PP_ALIGN.CENTER)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SLIDE 11 — C# App Architecture
+# SLIDE 12 — C# App Architecture
 # ─────────────────────────────────────────────────────────────────────────────
 s = add_slide(); bg(s)
-section_header(s, "10", "C# Application — PRM Engine")
+section_header(s, "11", "C# Application — PRM Engine")
 
 modes = [
     ("🏋  Training", GREEN,
@@ -519,10 +569,10 @@ txbox(s, "Inference (all modes):  diamond nails fixed → balls fall freely → 
       0.4, 6.28, 12.4, 0.45, size=13, color=GREEN, italic=True, align=PP_ALIGN.CENTER)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SLIDE 12 — Open Questions / Next Steps
+# SLIDE 13 — Open Questions / Next Steps
 # ─────────────────────────────────────────────────────────────────────────────
 s = add_slide(); bg(s)
-section_header(s, "11", "Open Questions & Next Steps")
+section_header(s, "12", "Open Questions & Next Steps")
 
 rect(s, 0.3, 0.75, 6.0, 0.38, fill=ACCENT2); txbox(s, "Open Design Questions", 0.4, 0.78, 5.8, 0.32, size=14, bold=True, color=BG)
 qs = [
@@ -555,7 +605,7 @@ for i,(title,desc) in enumerate(steps):
     txbox(s, f"   {desc}", 6.7, y+0.24, 6.1, 0.26, size=12, color=SUBTLE, italic=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SLIDE 13 — Summary
+# SLIDE 14 — Summary
 # ─────────────────────────────────────────────────────────────────────────────
 s = add_slide(); bg(s)
 rect(s, 0, 0, 13.33, 7.5, fill=RGBColor(0x06,0x14,0x22))
