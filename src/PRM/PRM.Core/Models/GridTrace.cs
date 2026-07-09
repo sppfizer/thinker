@@ -3,6 +3,9 @@ namespace PRM.Core.Models;
 /// <summary>Single snapshot of one ball at a specific row.</summary>
 public record BallFrame(int TokenId, float Position, float Velocity, float Mass, int ContextPosition);
 
+/// <summary>Event emitted when a ball leaves the active set.</summary>
+public record BallEvent(int TokenId, int Row, float Position, string Reason);
+
 /// <summary>
 /// Full simulation trace: ball positions at every row, plus grid geometry.
 /// Produced by BallSimulator.SimulateWithTrace — used by the PRM.Viz visualiser.
@@ -50,4 +53,7 @@ public class GridTrace
 
     /// <summary>Convenience: final positions after all rows.</summary>
     public BallFrame[] FinalBalls => RowFrames[^1];
+
+    /// <summary>Per-row removal events (dropped off or stuck).</summary>
+    public BallEvent[][] RowEvents { get; init; } = [];
 }

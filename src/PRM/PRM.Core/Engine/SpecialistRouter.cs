@@ -20,6 +20,11 @@ public class SpecialistRouter
         _parallel    = _specialists.Count <= 3;
     }
 
+    public void DecayNailStiffness(float decayRate = 0.02f)
+    {
+        foreach (var spec in _specialists) spec.DecayNailStiffness(decayRate);
+    }
+
     /// <summary>Predict using best-fit specialist (inference mode).</summary>
     public (int tokenId, string role, float confidence) Predict(int[] inputTokenIds)
     {

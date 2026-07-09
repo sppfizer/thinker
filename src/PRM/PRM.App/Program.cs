@@ -59,17 +59,19 @@ for (int i = dataset.Count - 1; i > 0; i--)
     (dataset[i], dataset[j]) = (dataset[j], dataset[i]);
 }
 
-int trainCount = Math.Max(1, (int)(dataset.Count * 0.60));
-int testCount  = Math.Max(1, (int)(dataset.Count * 0.20));
-int valCount   = Math.Max(1, dataset.Count - trainCount - testCount);
+// 70 / 10 / 20 split: train on fresh 70%, fine-tune on fresh 10%, validate on fresh 20%.
+// tuneSet is carved out AFTER trainSet so it is genuinely unseen during main training.
+int trainCount = Math.Max(1, (int)(dataset.Count * 0.70));
+int tuneCount  = Math.Max(1, (int)(dataset.Count * 0.10));
+int valCount   = Math.Max(1, dataset.Count - trainCount - tuneCount);
 
 var trainSet = dataset.Take(trainCount).ToList();
-var testSet  = dataset.Skip(trainCount).Take(testCount).ToList();
-var valSet   = dataset.Skip(trainCount + testCount).Take(valCount).ToList();
-var tuneSet  = trainSet.Take(Math.Max(1, trainSet.Count / 2)).ToList();
+var tuneSet  = dataset.Skip(trainCount).Take(tuneCount).ToList();
+var valSet   = dataset.Skip(trainCount + tuneCount).Take(valCount).ToList();
+var testSet  = valSet;   // no separate test slice with 70/10/20; testSet aliases valSet
 
 Console.WriteLine($"Dataset: {dataset.Count} samples  (window={window})");
-Console.WriteLine($"Split: train={trainSet.Count}, test={testSet.Count}, tune={tuneSet.Count}, val={valSet.Count}");
+Console.WriteLine($"Split: train={trainSet.Count}, tune={tuneSet.Count}, val={valSet.Count}  (70/10/20)");
 Console.WriteLine();
 
 // ── 4. Mode selection ─────────────────────────────────────────────────────
@@ -224,6 +226,7 @@ switch (mode)
             vizIds = GetRandomVizSample(VocabularyBuilder.Tokenise(corpus).Select(t => vocab.FirstOrDefault(v => v.Text == t)?.Id ?? -1).Where(id => id >= 0).ToArray());
         }
 
+        var vizSequences = BuildVizSequences(tokenIds, vocab, window);
         await using var server = new VizServer(vocab, port);
         Console.WriteLine($"Visualizer at http://localhost:{server.Port}/");
         if (!noBrowser)
@@ -245,18 +248,42 @@ switch (mode)
             catch (OperationCanceledException) { break; }
 
             var gridInfo = new DiamondGridInfo(grid.Config.TotalRows, grid.Config.WideningRows, grid.Config.EntryWidth, grid.Config.MaxWidth, grid.Config.NailSpacing);
-            await server.SendConfigAsync(gridInfo);
+            await server.SendConfigAsync(gridInfo, sequences: vizSequences);
             await Task.Delay(200);
             await VizStreamAsync(server, grid, vocab, vizIds);
 
-            // REPL
+            // REPL + browser play requests. The WebSocket path exists only in viz mode.
+            var consoleTask = StartConsoleRead(exitCts.Token);
+            var wsTask      = server.ReceiveMessageAsync(exitCts.Token);
             while (!exitCts.IsCancellationRequested)
             {
-                Console.Write("tokens (or Enter to replay)> ");
+                Task<string?> completed;
+                try { completed = await Task.WhenAny(consoleTask, wsTask); }
+                catch (OperationCanceledException) { goto nextClient; }
+
+                if (completed == wsTask)
+                {
+                    string? json;
+                    try { json = await wsTask; }
+                    catch (OperationCanceledException) { goto nextClient; }
+                    catch { break; }
+                    if (json == null) break;
+
+                    wsTask = server.ReceiveMessageAsync(exitCts.Token);
+                    if (TryParseBrowserPlay(json, vocab, out var browserIds))
+                    {
+                        vizIds = browserIds;
+                        await VizStreamAsync(server, grid, vocab, vizIds);
+                    }
+                    continue;
+                }
+
                 string? line;
-                try { line = await Task.Run(() => Console.ReadLine(), exitCts.Token); }
+                try { line = await consoleTask; }
                 catch (OperationCanceledException) { goto nextClient; }
                 if (line == null) break;
+                consoleTask = StartConsoleRead(exitCts.Token);
+
                 line = line.Trim();
                 if (line != "")
                 {
@@ -278,6 +305,55 @@ Console.WriteLine("\nDone.");
 
 // ── Viz helpers ───────────────────────────────────────────────────────────────
 
+static VizSequence[] BuildVizSequences(int[] corpusTokenIds, VocabToken[] vocab, int window)
+{
+    if (window <= 0 || corpusTokenIds.Length < window) return [];
+
+    var sequences = new List<VizSequence>();
+    for (int i = 0; i <= corpusTokenIds.Length - window; i++)
+    {
+        var ids = corpusTokenIds[i..(i + window)];
+        if (ids.Any(id => id < 0 || id >= vocab.Length)) continue;
+        var label = string.Join(" ", ids.Select(id => vocab[id].Text.Trim()));
+        sequences.Add(new VizSequence(ids, label));
+    }
+    return sequences.ToArray();
+}
+
+static Task<string?> StartConsoleRead(CancellationToken ct)
+{
+    Console.Write("tokens (or Enter to replay)> ");
+    return Task.Run(() => Console.ReadLine(), ct);
+}
+
+static bool TryParseBrowserPlay(string json, VocabToken[] vocab, out int[] ids)
+{
+    ids = [];
+    try
+    {
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("type", out var type) ||
+            !string.Equals(type.GetString(), "play", StringComparison.OrdinalIgnoreCase) ||
+            !root.TryGetProperty("ids", out var arr) ||
+            arr.ValueKind != JsonValueKind.Array)
+            return false;
+
+        var parsed = new List<int>();
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.TryGetInt32(out int id) && id >= 0 && id < vocab.Length)
+                parsed.Add(id);
+        }
+        ids = parsed.Take(4).ToArray();
+        return ids.Length >= 2;
+    }
+    catch (JsonException)
+    {
+        return false;
+    }
+}
+
 static async Task VizStreamAsync(VizServer server, DiamondGrid grid, VocabToken[] vocab, int[] tokenIds)
 {
     string[] labels = tokenIds.Select(id => vocab[id].Text.Trim()).ToArray();
@@ -294,8 +370,9 @@ static async Task VizStreamAsync(VizServer server, DiamondGrid grid, VocabToken[
         var offXs     = r < trace.NailOffXs.Length       ? trace.NailOffXs[r]       : [];
         var nailRadii = r < trace.NailRadii.Length       ? trace.NailRadii[r]       : [];
         var nailRes   = r < trace.NailResistances.Length ? trace.NailResistances[r] : [];
+        var events    = r < trace.RowEvents.Length       ? trace.RowEvents[r]       : [];
         int rowNum    = r < trace.TotalRows              ? r                        : trace.TotalRows;
-        await server.SendFrameAsync(balls, nailXs, offXs, nailRadii, nailRes, rowNum);
+        await server.SendFrameAsync(balls, nailXs, offXs, nailRadii, nailRes, events, rowNum);
     }
 
     var (predicted, _) = grid.Predict(tokenIds);
@@ -375,7 +452,7 @@ static void RunOptimization(
             NarrowingRows = cand.NarrowingRows,
             MaxWidth = 50f,
             EntryWidth = 20f,
-            DefaultDiameter = cand.DefaultDiameter,
+            DefaultRadius = cand.DefaultDiameter,
             DeflectionAlpha = cand.DeflectionAlpha,
             DeflectionIdfPower = cand.DeflectionIdfPower,
             GravityG = cand.GravityG,
@@ -451,7 +528,7 @@ static DiamondConfig LoadActiveConfig()
         NarrowingRows = 8,
         MaxWidth = 50f,
         EntryWidth = 20f,
-        DefaultDiameter = 0.75f
+        DefaultRadius = 0.75f
     };
 }
 
@@ -471,7 +548,7 @@ static void SaveBestConfig(Candidate cand)
         NarrowingRows = cand.NarrowingRows,
         MaxWidth = 50f,
         EntryWidth = 20f,
-        DefaultDiameter = cand.DefaultDiameter,
+        DefaultRadius = cand.DefaultDiameter,
         DeflectionAlpha = cand.DeflectionAlpha,
         DeflectionIdfPower = cand.DeflectionIdfPower,
         GravityG = cand.GravityG,

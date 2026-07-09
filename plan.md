@@ -49,6 +49,8 @@
 - [ ] **WebSocket reconnect after new viz** — after `VisualiseSingle` completes and user types new tokens,
   verify browser updates cleanly without needing a page refresh
 - [ ] **Show nail offset arrows** more clearly — scale arrow length, color by direction magnitude
+- [ ] **Add visualizer speed slider** — control fall-through speed in the browser so stuck/dropped balls are easier to inspect
+- [ ] **Show trained nail pattern** — render trained nail positions and sizes clearly so the learned routing pattern is visible at a glance
 
 ### 🟢 Model improvements — ideas to explore
 

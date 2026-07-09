@@ -41,6 +41,8 @@ internal static class HtmlPage
            border-radius:4px; cursor:pointer; font-size:12px; transition:background .15s; }
   button:hover { background:#253080; }
   button.active { background:#3030bb; border-color:#6060ee; color:#fff; }
+  select { background:#111946; color:#d8e0ff; border:1px solid #3535aa; border-radius:4px;
+           padding:4px 8px; max-width:320px; font-size:12px; }
   label  { font-size:11px; color:#7788aa; display:flex; align-items:center; gap:4px; }
   input[type=range] { width:100px; accent-color:#6060ee; }
   #rowCounter { font-size:12px; color:#6080aa; min-width:85px; }
@@ -58,6 +60,8 @@ internal static class HtmlPage
 </div>
 <canvas id="c"></canvas>
 <div id="controls">
+  <select id="seqSelect" title="Corpus sequence"></select>
+  <button id="btnPlaySel">▶ Play Selected</button>
   <button id="btnPlay">▶ Play</button>
   <button id="btnStep">⏭ Step</button>
   <button id="btnReset">↩ Reset</button>
@@ -79,9 +83,13 @@ const SUBSTEPS = 6;
 // ── State ─────────────────────────────────────────────────────────────────────
 let cfg    = null;
 let frames = [];       // row-frames from server
+let events = [];       // row removal events from server
 let trails = {};       // tokenId → [{x,y}] for trail drawing
 let curStep = 0.0;     // float: floor=row-index, frac=phase within that row
 let ticker  = null;
+let nailBgCanvas = null;
+let nailBgCtx    = null;
+let nailBgDirty  = true;
 
 // ── Colors ────────────────────────────────────────────────────────────────────
 const BALL_PALETTE = ['#ff5f5f','#3ecfc4','#f5c542','#bb7ee0','#ff955a','#62aaff','#9a8afe'];
@@ -95,7 +103,7 @@ function ballColor(id) {
 // ── Canvas ────────────────────────────────────────────────────────────────────
 const C = document.getElementById('c');
 const X = C.getContext('2d');
-function resize() { C.width = C.offsetWidth; C.height = C.offsetHeight; draw(); }
+function resize() { C.width = C.offsetWidth; C.height = C.offsetHeight; invalidateNailBackground(); draw(); }
 window.addEventListener('resize', resize);
 setTimeout(resize, 60);
 
@@ -114,6 +122,8 @@ function gridW(rowF) {
 }
 
 function toScreen(gx, rowF) {
+  // gx is an absolute grid coordinate in [0,maxWidth]. Narrow rows are already
+  // centred by BallSimulator.LeftBorder()/NailBaseX(), so no per-row remap here.
   return {
     x: MX + (gx / cfg.maxWidth) * SW(),
     y: MY + (rowF / cfg.totalRows) * SH()
@@ -153,6 +163,14 @@ function ballPos(x0, r0, x1, nail, frac) {
     rowF = r0 + 0.52 + ((frac - 0.58) / 0.42) * 0.48;
   }
   return { x, rowF };
+}
+
+function eventPos(ev) {
+  const f = frames[Math.min(ev.row ?? 0, frames.length - 1)];
+  const y = (ev.reason === 'stuck')
+    ? (ev.row ?? 0) + 0.5
+    : (ev.row ?? 0) + 0.18;
+  return toScreen(ev.position ?? 0, y);
 }
 
 // ── Get current interpolated balls for drawing ────────────────────────────
@@ -224,6 +242,8 @@ document.getElementById('btnStep').addEventListener('click', () => {
 document.getElementById('btnReset').addEventListener('click', () => {
   stopClock(); curStep=0; trails={}; draw(); updateRowLbl();
 });
+document.getElementById('btnPlaySel').addEventListener('click', playSelectedSequence);
+document.getElementById('seqSelect').addEventListener('change', playSelectedSequence);
 document.getElementById('chkNails').addEventListener('change',  draw);
 document.getElementById('chkTrails').addEventListener('change', draw);
 
@@ -248,10 +268,12 @@ function handle(msg) {
     case 'config':
       cfg = msg;
       Object.keys(colorMap).forEach(k => delete colorMap[k]);
+      populateSequences(cfg.sequences || []);
+      invalidateNailBackground();
       break;
 
     case 'clear':
-      stopClock(); frames=[]; trails={}; curStep=0;
+      stopClock(); frames=[]; events=[]; trails={}; curStep=0; invalidateNailBackground();
       document.getElementById('inputLabel').textContent = msg.tokens.join(' · ');
       document.getElementById('predLabel').textContent  = '—';
       document.getElementById('predLabel').className    = '';
@@ -263,17 +285,46 @@ function handle(msg) {
 
     case 'frame':
       frames.push(msg);
+      events[msg.row ?? frames.length - 1] = msg.events || [];
       break;
 
     case 'result': {
       const el = document.getElementById('predLabel');
       el.textContent = '→ ' + msg.predicted + (msg.target ? ' (target: '+msg.target+')' : '');
       el.className   = msg.correct ? 'correct' : 'wrong';
+      rebuildNailBackground();
       curStep=0; trails={}; draw(); updateRowLbl();
       startClock();
       break;
     }
   }
+}
+
+function populateSequences(sequences) {
+  const sel = document.getElementById('seqSelect');
+  const btn = document.getElementById('btnPlaySel');
+  sel.innerHTML = '';
+  sequences.forEach((seq, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = seq.label || (seq.ids || []).join(' ');
+    sel.appendChild(opt);
+  });
+  sel.disabled = sequences.length === 0;
+  btn.disabled = sequences.length === 0;
+}
+
+function selectedSequenceIds() {
+  const sel = document.getElementById('seqSelect');
+  const idx = sel.selectedIndex;
+  const seq = idx >= 0 ? cfg?.sequences?.[idx] : null;
+  return Array.isArray(seq?.ids) ? seq.ids : [];
+}
+
+function playSelectedSequence() {
+  const ids = selectedSequenceIds();
+  if (!ids.length || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'play', ids }));
 }
 
 function buildLegend(tokens) {
@@ -290,6 +341,7 @@ function draw() {
   drawDiamond();
   if (document.getElementById('chkNails').checked)  drawNails();
   if (document.getElementById('chkTrails').checked) drawTrailLines();
+  drawEvents();
   drawBalls();
   drawSlots();
 }
@@ -324,12 +376,50 @@ function drawDiamond() {
 }
 
 // ── Nail grid ─────────────────────────────────────────────────────────────────
+function invalidateNailBackground() {
+  nailBgDirty = true;
+}
+
+function rebuildNailBackground() {
+  if (!cfg || !frames.length || C.width <= 0 || C.height <= 0) return;
+  if (!nailBgCanvas) {
+    nailBgCanvas = document.createElement('canvas');
+    nailBgCtx = nailBgCanvas.getContext('2d');
+  }
+  if (nailBgCanvas.width !== C.width || nailBgCanvas.height !== C.height) {
+    nailBgCanvas.width = C.width;
+    nailBgCanvas.height = C.height;
+  }
+
+  nailBgCtx.clearRect(0, 0, nailBgCanvas.width, nailBgCanvas.height);
+  frames.forEach(f => {
+    if (!f.nails) return;
+    const gw = gridW(f.row);
+    const gl = (cfg.maxWidth - gw) / 2;
+    const gr = gl + gw;
+    f.nails.forEach(nail => {
+      if (nail.x < gl - 0.15 || nail.x > gr + 0.15) return;
+      const p  = toScreen(nail.x, f.row);
+      const nr = Math.max(3, Math.min(8, (nail.r ?? 0.5) * 9));
+      nailBgCtx.beginPath(); nailBgCtx.arc(p.x, p.y, nr, 0, Math.PI*2);
+      nailBgCtx.fillStyle  ='rgba(160,175,240,0.55)';
+      nailBgCtx.strokeStyle='rgba(130,150,225,0.60)';
+      nailBgCtx.lineWidth=1.0; nailBgCtx.fill(); nailBgCtx.stroke();
+    });
+  });
+  nailBgDirty = false;
+}
+
 function drawNails() {
   if (!frames.length) return;
   const ri     = Math.min(Math.floor(curStep), frames.length-1);
   const frac   = curStep - Math.floor(curStep);
-  const curRow = frames[ri]?.row ?? ri;
   const atNail = frac >= 0.35 && frac <= 0.75;
+
+  if (nailBgDirty || !nailBgCanvas ||
+      nailBgCanvas.width !== C.width || nailBgCanvas.height !== C.height)
+    rebuildNailBackground();
+  if (nailBgCanvas) X.drawImage(nailBgCanvas, 0, 0);
 
   // Determine hit nails for current step
   const hitSet = new Set();
@@ -343,58 +433,44 @@ function drawNails() {
     });
   }
 
-  frames.forEach(f => {
-    if (!f.nails) return;
-    const isActive = f.row === curRow;
-    // Diamond boundary for this row — clip out-of-bounds padding nails
-    const gw = gridW(f.row);
-    const gl = (cfg.maxWidth - gw) / 2;
-    const gr = gl + gw;
+  const f = frames[ri];
+  if (!f?.nails) return;
+  const gw = gridW(f.row);
+  const gl = (cfg.maxWidth - gw) / 2;
+  const gr = gl + gw;
 
-    f.nails.forEach((nail, ni) => {
-      // Skip nails outside the diamond boundary for this row
-      if (nail.x < gl - 0.15 || nail.x > gr + 0.15) return;
+  f.nails.forEach((nail, ni) => {
+    if (nail.x < gl - 0.15 || nail.x > gr + 0.15) return;
 
-      const p = toScreen(nail.x, f.row);
+    const p      = toScreen(nail.x, f.row);
+    const isHit  = hitSet.has(ni);
+    const rs     = nail.rs ?? 0.5;
+    const baseR  = Math.max(5, Math.min(14, (nail.r ?? 0.5) * 14));
+    const nr     = isHit ? baseR * 1.5 : baseR;
 
-      if (isActive) {
-        const isHit  = hitSet.has(ni);
-        const rs     = nail.rs ?? 0.5;
-        const baseR  = Math.max(5, Math.min(14, (nail.r ?? 0.5) * 14));
-        const nr     = isHit ? baseR * 1.5 : baseR;
+    if (isHit) {
+      const hit = ctx_radial(p.x, p.y, nr, nr*4, 'rgba(255,215,55,0.55)', 'rgba(255,215,55,0)');
+      X.beginPath(); X.arc(p.x, p.y, nr*4, 0, Math.PI*2); X.fillStyle=hit; X.fill();
+      X.beginPath(); X.arc(p.x, p.y, nr,   0, Math.PI*2);
+      X.fillStyle='rgba(255,225,80,0.92)'; X.strokeStyle='rgba(255,255,160,1)'; X.lineWidth=2; X.fill(); X.stroke();
+    } else {
+      X.beginPath(); X.arc(p.x, p.y, nr, 0, Math.PI*2);
+      X.fillStyle  =`rgba(205,220,255,${(0.55+rs*0.40).toFixed(2)})`;
+      X.strokeStyle=`rgba(165,190,255,${(0.60+rs*0.30).toFixed(2)})`;
+      X.lineWidth=1.6+rs*0.5; X.fill(); X.stroke();
+    }
 
-        if (isHit) {
-          const hit = ctx_radial(p.x, p.y, nr, nr*4, 'rgba(255,215,55,0.55)', 'rgba(255,215,55,0)');
-          X.beginPath(); X.arc(p.x, p.y, nr*4, 0, Math.PI*2); X.fillStyle=hit; X.fill();
-          X.beginPath(); X.arc(p.x, p.y, nr,   0, Math.PI*2);
-          X.fillStyle='rgba(255,225,80,0.92)'; X.strokeStyle='rgba(255,255,160,1)'; X.lineWidth=2; X.fill(); X.stroke();
-        } else {
-          X.beginPath(); X.arc(p.x, p.y, nr, 0, Math.PI*2);
-          X.fillStyle  =`rgba(205,220,255,${(0.55+rs*0.40).toFixed(2)})`;
-          X.strokeStyle=`rgba(165,190,255,${(0.60+rs*0.30).toFixed(2)})`;
-          X.lineWidth=1.6+rs*0.5; X.fill(); X.stroke();
-        }
-
-        // Deflection arrow
-        if (Math.abs(nail.ox) > 0.008) {
-          const al  = Math.min(22, 14 * Math.abs(nail.ox));
-          const dir = Math.sign(nail.ox);
-          const col = isHit ? '#ffe844' : (dir>0 ? '#ffcc44' : '#44ddff');
-          X.beginPath();
-          X.moveTo(p.x, p.y); X.lineTo(p.x+al*dir, p.y);
-          X.lineTo(p.x+(al-5)*dir, p.y-3);
-          X.moveTo(p.x+al*dir, p.y); X.lineTo(p.x+(al-5)*dir, p.y+3);
-          X.strokeStyle=col; X.lineWidth=isHit?2.5:1.8; X.stroke();
-        }
-      } else {
-        // Background grid nails — clearly visible dots, sized by nail.r
-        const nr = Math.max(3, Math.min(8, (nail.r ?? 0.5) * 9));
-        X.beginPath(); X.arc(p.x, p.y, nr, 0, Math.PI*2);
-        X.fillStyle  ='rgba(160,175,240,0.55)';
-        X.strokeStyle='rgba(130,150,225,0.60)';
-        X.lineWidth=1.0; X.fill(); X.stroke();
-      }
-    });
+    // Deflection arrow
+    if (Math.abs(nail.ox) > 0.008) {
+      const al  = Math.min(22, 14 * Math.abs(nail.ox));
+      const dir = Math.sign(nail.ox);
+      const col = isHit ? '#ffe844' : (dir>0 ? '#ffcc44' : '#44ddff');
+      X.beginPath();
+      X.moveTo(p.x, p.y); X.lineTo(p.x+al*dir, p.y);
+      X.lineTo(p.x+(al-5)*dir, p.y-3);
+      X.moveTo(p.x+al*dir, p.y); X.lineTo(p.x+(al-5)*dir, p.y+3);
+      X.strokeStyle=col; X.lineWidth=isHit?2.5:1.8; X.stroke();
+    }
   });
 }
 
@@ -447,6 +523,31 @@ function drawBalls() {
     X.fillStyle='#fff'; X.fillText(lbl,p.x,p.y);
     X.textAlign='left'; X.textBaseline='alphabetic';
   });
+}
+
+function drawEvents() {
+  const ri = Math.min(Math.floor(curStep), frames.length - 1);
+  for (let row = 0; row <= ri; row++) {
+    const rowEvents = events[row] || [];
+    const age = ri - row;
+    const fade = Math.max(0, 1 - age / 5);
+    rowEvents.forEach(ev => {
+    const p = eventPos(ev);
+    const isStuck = (ev.reason || '') === 'stuck';
+    const col = isStuck ? '#b56cff' : '#ff6b4a';
+    const txt = isStuck ? 'STUCK' : 'DROP';
+    const r = isStuck ? 18 : 14;
+    const alpha = Math.max(0.25, fade);
+    const g = ctx_radial(p.x, p.y, 0, r * 2.6, col + Math.round(alpha * 255).toString(16).padStart(2, '0'), col + '00');
+    X.beginPath(); X.arc(p.x, p.y, r * 2.6, 0, Math.PI * 2); X.fillStyle = g; X.fill();
+    X.beginPath(); X.arc(p.x, p.y, r, 0, Math.PI * 2); X.fillStyle = col; X.strokeStyle = '#fff8'; X.lineWidth = 2; X.fill(); X.stroke();
+    X.globalAlpha = alpha;
+    X.fillStyle = '#fff'; X.font = 'bold 9px Segoe UI'; X.textAlign = 'center'; X.textBaseline = 'middle';
+    X.fillText(txt, p.x, p.y);
+    X.globalAlpha = 1;
+    X.textAlign = 'left'; X.textBaseline = 'alphabetic';
+  });
+  }
 }
 
 // ── Output slots ──────────────────────────────────────────────────────────────

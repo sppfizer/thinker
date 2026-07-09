@@ -1,0 +1,28 @@
+{
+  "Config": {
+    "RoleName": "Analyst",
+    "EntryWidth": 418,
+    "MaxWidth": 836,
+    "WideningRows": 26,
+    "NarrowingRows": 9,
+    "NailSpacing": 2,
+    "DefaultRadius": 0.5,
+    "DeflectionAlpha": 0.6,
+    "DeflectionIdfPower": 0.5,
+    "DeflectionAlphaY": 0.15,
+    "GravityG": 0.01,
+    "ProximityBand": 8,
+    "CollisionRadius": 0.5,
+    "DeltaTime": 0.1,
+    "InputWindowSize": 3,
+    "TotalRows": 35,
+    "DefaultDiameter": 0.5
+  },
+  "LR": 0.1,
+  "TuneLR": 0.01,
+  "TrainEpochs": 500,
+  "TuneEpochs": 10,
+  "WideningRatio": 0.75,
+  "TrainPasses": 2,
+  "DeflectionIdfPower": 0.5
+}

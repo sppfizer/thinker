@@ -7,3 +7,4 @@ src/**/obj/
 prm_nails*.bin
 node_modules/
 viz-screenshot.png
+opt_*.log

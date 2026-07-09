@@ -103,7 +103,7 @@ public sealed class VizServer : IAsyncDisposable
     /// <summary>
     /// Send the vocab + grid config so the browser can draw slots and scale the grid.
     /// </summary>
-    public Task SendConfigAsync(DiamondGridInfo info, CancellationToken ct = default) =>
+    public Task SendConfigAsync(DiamondGridInfo info, IEnumerable<VizSequence>? sequences = null, CancellationToken ct = default) =>
         SendAsync(new
         {
             type        = "config",
@@ -112,7 +112,8 @@ public sealed class VizServer : IAsyncDisposable
             entryWidth  = info.EntryWidth,
             maxWidth    = info.MaxWidth,
             nailSpacing = info.NailSpacing,
-            vocab       = _vocab.Select(v => new { v.Id, v.Text, v.Mass, v.SlotLeft, v.SlotRight, v.SlotWidth }).ToArray()
+            vocab       = _vocab.Select(v => new { v.Id, v.Text, v.Mass, v.SlotLeft, v.SlotRight, v.SlotWidth }).ToArray(),
+            sequences   = (sequences ?? []).Select(s => new { ids = s.Ids, label = s.Label }).ToArray()
         }, ct);
 
     /// <summary>Signal the browser that a new prediction sequence is starting.</summary>
@@ -122,12 +123,14 @@ public sealed class VizServer : IAsyncDisposable
     /// <summary>Send one row of ball positions + nail data to the browser.</summary>
     public Task SendFrameAsync(PRM.Core.Models.BallFrame[] balls, float[] nailXs, float[] offXs,
                                float[] nailRadii, float[] nailResists,
+                               PRM.Core.Models.BallEvent[] events,
                                int row, CancellationToken ct = default) =>
         SendAsync(new
         {
             type  = "frame",
             row,
             balls = balls.Select(b => new { b.TokenId, b.Position, b.Mass, b.Velocity }).ToArray(),
+            events= events.Select(e => new { e.TokenId, e.Row, e.Position, e.Reason }).ToArray(),
             nails = nailXs.Select((x, i) => new {
                 x,
                 ox = i < offXs.Length       ? offXs[i]       : 0f,
@@ -140,6 +143,16 @@ public sealed class VizServer : IAsyncDisposable
     public Task SendResultAsync(string predicted, string? target, bool correct, CancellationToken ct = default) =>
         SendAsync(new { type = "result", predicted, target, correct }, ct);
 
+    /// <summary>Receive one text message from the connected client (for play-on-demand).</summary>
+    public async Task<string?> ReceiveMessageAsync(CancellationToken ct)
+    {
+        if (_wsCtx?.WebSocket.State != WebSocketState.Open) return null;
+        var buf = new byte[4096];
+        var result = await _wsCtx.WebSocket.ReceiveAsync(buf, ct);
+        if (result.MessageType == WebSocketMessageType.Close) return null;
+        return Encoding.UTF8.GetString(buf, 0, result.Count);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_wsCtx?.WebSocket.State == WebSocketState.Open)
@@ -150,4 +163,4 @@ public sealed class VizServer : IAsyncDisposable
 
 /// <summary>Minimal grid geometry info needed by the browser.</summary>
 public record DiamondGridInfo(int TotalRows, int WideningRows, float EntryWidth, float MaxWidth, float NailSpacing = 2.0f);
-
+public record VizSequence(int[] Ids, string Label);

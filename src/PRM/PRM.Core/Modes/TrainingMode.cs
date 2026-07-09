@@ -74,6 +74,7 @@ public class TrainingMode
 
             // Apply learning rate decay after each epoch
             lr *= LrDecayPerEpoch;
+            _router.DecayNailStiffness(0.02f);
         }
     }
 }

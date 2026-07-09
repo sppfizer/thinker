@@ -11,6 +11,8 @@ public class Ball
     public int   EntryRow        { get; init; }   // row it was dropped at (always 0)
     public bool  Active          { get; set; } = true;
     public bool  Stuck           { get; set; }
+    public int   LastNailCol     { get; set; } = -1; // column touched in latest deflection
+    public int   LastNailTIdx    { get; set; } = -1; // token routing index used
     public List<int> ContactNailIds { get; } = [];
 
     public Ball(int tokenId, float position, float mass, int contextPosition = 0)

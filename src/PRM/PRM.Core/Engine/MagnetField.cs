@@ -23,16 +23,17 @@ public class MagnetField
 
         if (row <= _cfg.WideningRows)
         {
-            // Widening phase: force weakens as depth increases (fans outward)
-            float depthFrac = (float)row / _cfg.WideningRows;   // 0 → 1
-            float scale     = 1f - depthFrac;                    // 1 at top → 0 at midpoint
-            return delta * scale;
+            // Widening phase: constant moderate force so every row receives training
+            // signal. Previous design faded to 0 at the midpoint, leaving the widest
+            // (most-nailed) rows completely untrained — a major convergence killer.
+            return delta * 0.4f;
         }
         else
         {
-            // Narrowing phase: force strengthens as output approaches
-            float depthFrac = (float)(row - _cfg.WideningRows) / _cfg.NarrowingRows;  // 0 → 1
-            return delta * depthFrac;
+            // Narrowing phase: ramps from 0.4 → 1.0 so the model converges firmly
+            // toward the target slot as it approaches the output row.
+            float depthFrac = (float)(row - _cfg.WideningRows) / Math.Max(_cfg.NarrowingRows, 1);
+            return delta * (0.4f + 0.6f * depthFrac);
         }
     }
 }

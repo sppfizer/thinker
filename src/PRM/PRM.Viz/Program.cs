@@ -156,8 +156,9 @@ static async Task VisualiseSingle(VizServer server, DiamondGrid grid, VocabToken
         var offXs     = r < trace.NailOffXs.Length       ? trace.NailOffXs[r]       : [];
         var nailRadii = r < trace.NailRadii.Length       ? trace.NailRadii[r]       : [];
         var nailRes   = r < trace.NailResistances.Length ? trace.NailResistances[r] : [];
+        var events    = r < trace.RowEvents.Length       ? trace.RowEvents[r]       : [];
         int rowNum    = r < trace.TotalRows              ? r                        : trace.TotalRows;
-        await server.SendFrameAsync(balls, nailXs, offXs, nailRadii, nailRes, rowNum);
+        await server.SendFrameAsync(balls, nailXs, offXs, nailRadii, nailRes, events, rowNum);
     }
 
     // Compute prediction from final frame

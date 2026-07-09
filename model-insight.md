@@ -251,25 +251,57 @@ Given input sequence → predict next token:
 
 ---
 
-  ### 3.1 Recent Training Refinements (2026-07-09)
+  ### 3.1 Training Refinements — Full History
 
-  The current training loop now includes:
+  #### Phase 1 refinements (tiny_corpus, 87 samples, 40 tokens)
   - **Contact memory**: each ball records the unique nails it touched during the fall.
-  - **Post-fall reinforcement**: when the prediction is correct, the balls with the fewest contacts reinforce the nails they hit.
-  - **Angle-aware updates**: nails are corrected more strongly when their current direction disagrees more with the magnet target.
-  - **Nail inertia / density**: stiff nails move less and also get slightly more rigid when reinforced.
-  - **Thinking vs summarising bounds**: balls bounce back inside during widening, but can drop off in narrowing.
-  - **Stuck detection + retries**: if a sample misses, training retries it up to 5 times before counting a miss.
-
-  Current sweep on the 39-sample corpus:
+  - **Post-fall reinforcement**: correct predictions → fewest-contact balls stiffen their nails.
+  - **Angle-aware updates**: nails corrected more strongly when direction disagrees with magnet.
+  - **Nail inertia / density**: stiff nails move less; reinforced nails become more rigid.
+  - **Thinking vs summarising bounds**: balls drop off during widening, bounce back in narrowing.
+  - **Stuck detection + retries**: up to 5 retries per miss before counting a permanent miss.
 
   | Candidate | Val | Test | Notes |
   |---|---:|---:|---|
-  | baseline | 0.0% | 14.3% | flat deflection |
-  | sqrt-idf | 11.1% | 14.3% | improved over flat |
-  | inverse-idf | **22.2%** | 14.3% | best current result |
+  | baseline (flat deflection) | 0.0% | 14.3% | phase 1 start |
+  | sqrt-idf weighting | 11.1% | 14.3% | improved over flat |
+  | inverse-idf weighting | 22.2% | 14.3% | best phase 1 |
+  | warm-start optimizer (500 iters) | **33.3%** | 23.5% | best on tiny_corpus |
 
-  The main gain came from combining retry-based training with contact reinforcement and inertia-aware nail updates; the benchmark is still modest, but it is now materially better than the previous flat-deflection baseline.
+  #### Phase 2 — Bug fixes (2026-07-09), audited by GPT-5.5 and Claude Opus 4.8
+
+  A joint audit by GPT-5.5 and Claude Opus 4.8 identified several blocking bugs that were causing the model to be stuck at ~33% regardless of hyperparameter tuning.
+
+  | # | Bug | Impact | Fix |
+  |---|---|---|---|
+  | 10 | MagnetField force = 0 at midpoint (widest rows got zero training signal) | **Blocking** — most-nailed rows never trained | Changed to constant 0.4 in widening, 0.4→1.0 ramp in narrowing |
+  | 11 | Stiffening ratchet — every nail touched during training gained Resistance/Density; grid froze within first few epochs (12× LR collapse) | **Blocking** — learning rate effectively 0 after early epochs | Removed per-step stiffening; added SoftenContacts on miss; added per-epoch 2% decay toward baseline |
+  | 12 | Wrong nail trained — `ApplyNailUpdates` recomputed column from post-deflection position; different nail got trained than the one that deflected the ball | **Blocking** — unstable/incorrect gradient signal | Store `LastNailCol`/`LastNailTIdx` during deflection; use stored values in update |
+  | 13 | Nail update: force-accumulation form had no equilibrium; nails oscillated and saturated | **Blocking** — oscillation, no convergence | Changed to error-correction form: `newX = currentX + scale*(idealX − currentX)` |
+  | 14 | Optimizer restart: `bestVal` stayed at global best; restart couldn't hill-climb from new region | **Non-blocking** — wasted 80+ iterations per restart | Separated `currentVal` (local) from `globalBestVal` (never regresses) |
+  | 15 | SoftenContacts: same nail softened N× per miss (once per ball) instead of once | **Non-blocking** — floor collapse risk | Deduplicated with `.Distinct()` |
+  | 16 | DecayNailStiffness: used flat baseDensity=1.0 but InitNails uses `1+(r+c)%5*0.05` | **Non-blocking** — erased intended per-nail density pattern | Match InitNails formula inside decay loop |
+  | 17 | Error-correction scale unbound; with inertia at floor, scale could reach 8× | **Non-blocking** — oscillation risk | Clamped `scale = Clamp(lr*massFactor/inertia, 0, 1)` |
+  | 18 | Split was 60/20/20 with tuneSet = first half of trainSet (same data) | **Methodology** | Changed to 70/10/20 with genuinely separate tuneSet carved after trainSet |
+  | 19 | Optimizer corpus arg silently ignored; always ran on tiny_corpus | **Methodology** | Fixed arg handling; switched to simple_corpus.txt (209 tokens, 604 samples) |
+  | 20 | **Deflection scale invariant** — `rawStepX = offX * alpha` (constant ≤0.6 units/row) regardless of grid width. For simple_corpus (418-unit output zone, 35 rows), max total travel = 21 units = 5% of output zone → balls never reach target slots, model stuck at random (0.8%) | **Blocking on large vocab** | Changed to `rawStepX = offX * maxStepX * idf` where `maxStepX = rowWidth/TotalRows * alpha`. `offX=1` now always reaches per-row budget. Training ideal normalised as `forceX * TotalRows / rowWidth` to match |
+  | 21 | Default MaxWidth = 4× entryWidth created 27M-parameter grid; 337K training steps → 2 updates/param average (sparse, no convergence) | **Blocking on large vocab** | Changed default to 2× entryWidth; rows capped at `vocab/6` (not `vocab/4`) |
+  | 22 | Viz `drawNails()` iterated all frames every render tick — O(totalRows × nailsPerRow) arc ops per frame | **Viz perf** | Offscreen canvas for static background; only active-row nails redraw per tick |
+  | 23 | Viz: no way to select word combinations from browser; required server console REPL input | **Viz UX** | Added `<select>` combobox with all sliding-window-3 corpus sequences; auto-play on selection; WebSocket `{type:"play"}` message triggers re-simulation on server |
+  | 24 | Viz: nail `ox` averaged across all balls (lost per-token routing info) | **Viz correctness** | Changed to dominant-token (heaviest ball) offset for clearest trained routing display |
+
+  #### Phase 2 baseline (simple_corpus.txt, post all fixes)
+
+  | Metric | Value | Notes |
+  |---|---:|---|
+  | Vocabulary | 209 tokens | vs 40 (tiny_corpus) |
+  | Dataset | 604 samples | vs 87 |
+  | Split | 70/10/20 (422/60/122) | genuine train/tune/val separation |
+  | Best on tiny_corpus (pre-fix) | 33.3% val / 23.5% test | 18-sample val set, many bugs present |
+  | simple_corpus baseline (pre-fix code, old nails) | ~32% | random noise — incompatible nails loaded |
+  | simple_corpus after fixes | **not yet run** | deflection-scale + stiffening-ratchet fixes require clean optimizer run |
+
+  > **Next step:** run `dotnet run -- --corpus data/simple_corpus.txt autooptimize` from `C:\src\Claude\Thinker` using GPT-5.5 at high effort for hyperparameter search. All blocking bugs are now fixed.
 
   ---
 
@@ -895,6 +927,9 @@ No magnet. No nail updates. Purely deterministic routing.
 | 4 | Ball gravity frozen at 0 via multiplicative perturbation | Changed to additive perturbation for G and collision |
 | 5 | Sequential train/val split → rare words never seen in training | Shuffle dataset before split |
 | 6 | Ball velocities explode from repeated elastic collisions | Clamp velocity to ±5; NaN/Infinity guard in NailColumn |
+| 7 | Legacy `DefaultDiameter` config alias ignored the provided value | Alias now forwards to `DefaultRadius`; legacy and new configs both work |
+| 8 | Widening/narrowing boundary was off by one row | Bounds/stuck now use the same `row <= WideningRows` split as geometry/magnet |
+| 9 | Auto-scaled configs dropped `DeflectionIdfPower` | Clone now preserves `DeflectionIdfPower`, so IDF sweeps stay live after resize |
 
 ---
 
@@ -905,6 +940,7 @@ No magnet. No nail updates. Purely deterministic routing.
 - **WideningRatio converges to 79–83%** consistently — confirms: think more, summarise less
 - Preferred NailSpacing: 1.8–1.9 (slightly tighter than default 2.0)
 - More epochs needed for convergence at this scale: 80–130 vs early default of 30
+- IDF power sweep was previously unreachable in `AutoOptimizer.Perturb`; that is now fixed, so the next sweep can actually test flat vs sqrt vs inverse-IDF.
 
 ---
 

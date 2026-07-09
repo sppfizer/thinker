@@ -76,7 +76,7 @@ public class DiamondConfig
 
     // ── Legacy alias so existing JSON keeps loading ────────────────────────────
     /// <summary>Legacy: maps to DefaultRadius.</summary>
-    public float  DefaultDiameter   { get => DefaultRadius; init { } }
+    public float  DefaultDiameter   { get => DefaultRadius; init => DefaultRadius = value; }
 
     /// <summary>Pre-defined role configs (updated for 2D nail model).</summary>
     public static DiamondConfig Analyst         => new() { RoleName="Analyst",         WideningRows=10, NarrowingRows=10, DefaultRadius=0.5f };

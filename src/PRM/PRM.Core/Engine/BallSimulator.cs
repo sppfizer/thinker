@@ -105,8 +105,8 @@ public class BallSimulator
                     ball.Position = (left + right) / 2f;
             }
 
-            // 5. Thinking phase: bounce back inside. Summarizing phase: drop off.
-            ResolveBounds(active, row, left, right);
+            // 5. Thinking phase: drop off. Summarizing phase: bounce back inside.
+            _ = ResolveBounds(active, row, left, right);
         }
 
         return active;
@@ -129,6 +129,7 @@ public class BallSimulator
         var nailResistList = new float[totalRows][];
         var rowNailCounts  = new int[totalRows];
         var rowFrames      = new PRM.Core.Models.BallFrame[totalRows + 1][];
+        var rowEvents      = new List<PRM.Core.Models.BallEvent>[totalRows];
 
         // Deep-copy input balls so the original state is unchanged
         var active = inputBalls.Select(b =>
@@ -136,6 +137,7 @@ public class BallSimulator
 
         for (int row = 0; row < totalRows; row++)
         {
+            rowEvents[row] = [];
             gridLefts[row]  = LeftBorder(row);
             gridRights[row] = RightBorder(row);
             int nailCount   = _rowCols[row];
@@ -145,12 +147,23 @@ public class BallSimulator
             rowFrames[row] = active.Select(b =>
                 new PRM.Core.Models.BallFrame(b.TokenId, b.Position, b.Velocity, b.Mass, b.ContextPosition)).ToArray();
 
-            // Record nail base positions + averaged offset + physical properties
+            // Record nail base positions + dominant token offset + physical properties
             var baseXs  = new float[nailCount];
             var offXs   = new float[nailCount];
             var offYs   = new float[nailCount];
             var radii   = new float[nailCount];
             var resists = new float[nailCount];
+            float maxMass = 0f;
+            int dominantTIdx = -1;
+            foreach (var b in active)
+            {
+                int tIdx = TokenIndex(b);
+                if (tIdx >= 0 && tIdx < _tokenOffX.GetLength(2) && b.Mass > maxMass)
+                {
+                    maxMass = b.Mass;
+                    dominantTIdx = tIdx;
+                }
+            }
             for (int c = 0; c < nailCount; c++)
             {
                 baseXs[c] = NailBaseX(row, c);
@@ -158,19 +171,10 @@ public class BallSimulator
                 int cc = Math.Min(c,   _nails.GetLength(1) - 1);
                 radii[c]   = _nails[rc, cc].Radius;
                 resists[c] = _nails[rc, cc].Resistance;
-                if (active.Count > 0)
+                if (dominantTIdx >= 0 && dominantTIdx < _tokenOffX.GetLength(2))
                 {
-                    foreach (var b in active)
-                    {
-                        int tIdx = TokenIndex(b);
-                        if (tIdx < _tokenOffX.GetLength(2))
-                        {
-                            offXs[c] += _tokenOffX[row, c, tIdx];
-                            offYs[c] += _tokenOffY[row, c, tIdx];
-                        }
-                    }
-                    offXs[c] /= active.Count;
-                    offYs[c] /= active.Count;
+                    offXs[c] = _tokenOffX[row, c, dominantTIdx];
+                    offYs[c] = _tokenOffY[row, c, dominantTIdx];
                 }
             }
             nailBaseXsList[row] = baseXs;
@@ -194,7 +198,7 @@ public class BallSimulator
                 if (float.IsNaN(ball.Position) || float.IsInfinity(ball.Position))
                     ball.Position = (left + right) / 2f;
             }
-            ResolveBounds(active, row, left, right);
+            rowEvents[row].AddRange(ResolveBounds(active, row, left, right));
         }
 
         // Final snapshot: positions after all rows (output positions)
@@ -215,6 +219,7 @@ public class BallSimulator
             NailResistances= nailResistList,
             RowNailCounts  = rowNailCounts,
             RowFrames      = rowFrames,
+            RowEvents      = rowEvents.Select(x => x.ToArray()).ToArray(),
         };
     }
 
@@ -249,6 +254,32 @@ public class BallSimulator
         }
 
         return uniqueNails.Length;
+    }
+
+    /// <summary>
+    /// Wrong-prediction softening: reduce stiffness on contacted nails so they
+    /// remain plastic and can be corrected in future samples.
+    /// Mirror of ReinforceContacts, called only on miss.
+    /// </summary>
+    public void SoftenContacts(IEnumerable<Ball> balls, float learningRate)
+    {
+        // Deduplicate so a nail shared by multiple balls is only softened once per miss
+        var uniqueNails = balls
+            .Where(b => b.TokenId >= 0 && !b.Stuck)
+            .SelectMany(b => b.ContactNailIds)
+            .Distinct();
+
+        foreach (int nailId in uniqueNails)
+        {
+            int row = nailId / 10_000;
+            int col = nailId % 10_000;
+            if (row < 0 || row >= _nails.GetLength(0) || col < 0 || col >= _nails.GetLength(1)) continue;
+            var nail = _nails[row, col];
+            float drop = learningRate * 0.05f;
+            nail.Resistance = Math.Clamp(nail.Resistance - drop,       0.05f, 2.5f);
+            nail.Density    = Math.Clamp(nail.Density    - drop * 0.5f, 0.1f, 4.0f);
+            _nails[row, col] = nail;
+        }
     }
 
     // ── Grid geometry ─────────────────────────────────────────────────────────
@@ -290,10 +321,14 @@ public class BallSimulator
 
     private void ApplyNailDeflection(Ball ball, int row)
     {
+        ball.LastNailCol  = -1;
+        ball.LastNailTIdx = -1;
+
         int col = NailColumn(ball.Position, row);
         if (col < 0 || col >= _rowCols[row]) return;
 
         int tIdx = TokenIndex(ball);
+        if (tIdx < 0 || tIdx >= _tokenOffX.GetLength(2)) return;
         int nailId = NailKey(row, col);
         float offX   = _tokenOffX[row, col, tIdx];
         float offY   = _tokenOffY[row, col, tIdx];
@@ -306,10 +341,17 @@ public class BallSimulator
         // 0 = flat, 0.5 = sqrt-IDF, 1 = inverse-mass.
         float idf = MathF.Pow(1f / Math.Max(ball.Mass, 0.01f), _cfg.DeflectionIdfPower);
 
-        // Horizontal position change (width-normalised to prevent overshooting)
+        // Horizontal position change.
+        // maxStepX = per-row budget so a fully-deflected nail (offX=1) moves the ball
+        // one TotalRows-th of the row width per step.  rawStepX uses maxStepX as the
+        // scale so offX=1 always reaches the budget cap regardless of grid width.
+        // Old code used offX*alpha (constant ≈0.6 units) which was far too small for
+        // wide grids (simple_corpus: output zone 418 units, max travel = 21 units → 5%).
         float rowWidth  = Math.Max(GridWidth(row), 1f);
         float maxStepX  = rowWidth / _cfg.TotalRows * _cfg.DeflectionAlpha;
-        float rawStepX  = offX * _cfg.DeflectionAlpha * idf;
+        float rawStepX  = offX * maxStepX * idf;
+        ball.LastNailCol  = col;
+        ball.LastNailTIdx = tIdx;
         ball.Position  += Math.Clamp(rawStepX, -maxStepX, maxStepX);
 
         // Horizontal momentum nudge from the Y-component of the 2D offset
@@ -348,10 +390,11 @@ public class BallSimulator
         {
             if (ball.TokenId < 0) continue;   // skip neutral probe ball — no semantics to train
 
-            int col = NailColumn(ball.Position, row);
+            int col = ball.LastNailCol;
             if (col < 0 || col >= _rowCols[row]) continue;
 
-            int tIdx = TokenIndex(ball);
+            int tIdx = ball.LastNailTIdx;
+            if (tIdx < 0 || tIdx >= _tokenOffX.GetLength(2)) continue;
             var nail = _nails[row, col];
             float resistance = nail.Resistance;
             float density = Math.Max(nail.Density, 0.1f);
@@ -360,43 +403,35 @@ public class BallSimulator
             // Magnet force along x-axis toward targetCentre
             float forceX = _magnet!.Force(row, ball.Position, targetCentre);
 
-            // Normalise force by row width so the update magnitude is stable
+            // Normalise to the same coordinate space as offX: fraction of per-row budget.
+            // offX=1 → ball moves maxStepX = rowWidth/TotalRows*alpha per row.
+            // idealX=1 → nail should point at maximum deflection toward target.
+            // Normalise by rowWidth/TotalRows so idealX saturates to 1 when delta≥rowWidth/TotalRows,
+            // giving proportional guidance for small deltas and full-deflection for large ones.
             float rowWidth   = Math.Max(GridWidth(row), 1f);
-            float normForceX = forceX / rowWidth;
+            float normForceX = forceX * _cfg.TotalRows / rowWidth;
 
             // Small y-axis component: helps build momentum toward target
             float normForceY = normForceX * 0.25f;
 
-            // Punish larger angular faults more heavily so the next identical sample
-            // moves the nail in a way that reduces the same error.
-            float idealX = normForceX;
-            float idealY = normForceY;
             float currentX = _tokenOffX[row, col, tIdx];
             float currentY = _tokenOffY[row, col, tIdx];
-            float currentLen = MathF.Max(MathF.Sqrt(currentX * currentX + currentY * currentY), 1e-6f);
-            float idealLen   = MathF.Max(MathF.Sqrt(idealX * idealX + idealY * idealY), 1e-6f);
-            float dot = (currentX * idealX + currentY * idealY) / (currentLen * idealLen);
-            float anglePenalty = 1f + (1f - Math.Clamp(dot, -1f, 1f));
 
             // Weight and nail inertia both influence how far the nail can move.
             float massFactor = MathF.Sqrt(Math.Max(ball.Mass, 0.01f));
             float inertia    = Math.Max(resistance * density * (1f + radius), 0.05f);
-            float deltaX = lr * massFactor * anglePenalty * normForceX / inertia;
-            float deltaY = lr * massFactor * anglePenalty * normForceY / inertia;
 
-            float newX = currentX + deltaX;
-            float newY = currentY + deltaY;
-
-            // Project back onto the unit circle (the key constraint)
+            // Error-correction: pull current offset toward the ideal (magnet direction).
+            // Natural equilibrium at current==ideal; amplitude shrinks as the nail converges.
+            // Clamp scale to [0,1] to prevent overshoot when inertia is at its floor.
+            float idealX = normForceX;
+            float idealY = normForceY;
+            float scale  = Math.Clamp(lr * massFactor / inertia, 0f, 1f);
+            float newX   = currentX + scale * (idealX - currentX);
+            float newY   = currentY + scale * (idealY - currentY);
             ProjectUnitCircle(ref newX, ref newY);
-
             _tokenOffX[row, col, tIdx] = newX;
             _tokenOffY[row, col, tIdx] = newY;
-
-            // Strengthen the nail slightly when the current sample points to it.
-            nail.Resistance = Math.Clamp(nail.Resistance + lr * massFactor * 0.01f, 0.05f, 2.0f);
-            nail.Density    = Math.Clamp(nail.Density + lr * massFactor * 0.005f, 0.1f, 3.0f);
-            _nails[row, col] = nail;
         }
     }
 
@@ -447,51 +482,56 @@ public class BallSimulator
             dst[r, c, t] = src[r, c, t];
     }
 
-    private void ResolveBounds(List<Ball> balls, int row, float left, float right)
+    private List<PRM.Core.Models.BallEvent> ResolveBounds(List<Ball> balls, int row, float left, float right)
     {
         float jamThreshold = Math.Max(_cfg.NailSpacing * 0.18f, 0.15f);
         float velThreshold = 0.04f;
+        var events = new List<PRM.Core.Models.BallEvent>();
 
         foreach (var ball in balls)
         {
             if (ball.Position < left)
             {
-                if (row < _cfg.WideningRows)
+                if (row <= _cfg.WideningRows)
+                {
+                    events.Add(new PRM.Core.Models.BallEvent(ball.TokenId, row, ball.Position, "dropped"));
+                    ball.Active = false;
+                }
+                else
                 {
                     ball.Position = left + (left - ball.Position) * 0.35f;
                     ball.Velocity = Math.Abs(ball.Velocity) * 0.55f;
                 }
-                else
-                {
-                    ball.Active = false;
-                }
             }
             else if (ball.Position > right)
             {
-                if (row < _cfg.WideningRows)
+                if (row <= _cfg.WideningRows)
                 {
-                    ball.Position = right - (ball.Position - right) * 0.35f;
-                    ball.Velocity = -Math.Abs(ball.Velocity) * 0.55f;
+                    events.Add(new PRM.Core.Models.BallEvent(ball.TokenId, row, ball.Position, "dropped"));
+                    ball.Active = false;
                 }
                 else
                 {
-                    ball.Active = false;
+                    ball.Position = right - (ball.Position - right) * 0.35f;
+                    ball.Velocity = -Math.Abs(ball.Velocity) * 0.55f;
                 }
             }
 
             if (ball.Active && IsStuck(ball, row, jamThreshold, velThreshold))
             {
                 ball.Stuck = true;
+                events.Add(new PRM.Core.Models.BallEvent(ball.TokenId, row, ball.Position, "stuck"));
                 ball.Active = false;
             }
         }
 
         balls.RemoveAll(b => !b.Active);
+        return events;
     }
 
     private bool IsStuck(Ball ball, int row, float jamThreshold, float velThreshold)
     {
-        if (row < _cfg.WideningRows) return false;
+        if (row <= _cfg.WideningRows) return false;
         if (Math.Abs(ball.Velocity) > velThreshold) return false;
 
         int col = NailColumn(ball.Position, row);

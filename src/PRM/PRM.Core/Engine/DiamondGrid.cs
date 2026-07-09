@@ -40,6 +40,7 @@ public class DiamondGrid
                 NailSpacing      = config.NailSpacing,
                 DefaultRadius    = config.DefaultRadius,
                 DeflectionAlpha  = config.DeflectionAlpha,
+                DeflectionIdfPower = config.DeflectionIdfPower,
                 DeflectionAlphaY = config.DeflectionAlphaY,
                 GravityG         = config.GravityG,
                 ProximityBand    = config.ProximityBand,
@@ -100,6 +101,8 @@ public class DiamondGrid
         var (pred, conf) = Score(survivors, balls);
         if (pred == targetTokenId)
             _simulator.ReinforceContacts(survivors, targetCentre, learningRate);
+        else
+            _simulator.SoftenContacts(survivors, learningRate);
         return (pred, pred == targetTokenId, conf);
     }
 
@@ -259,6 +262,22 @@ public class DiamondGrid
         float gridSpan = _simulator.GridWidth(lastRow);
 
         return gridLeft + (slotCentre / totalSlotSpan) * gridSpan;
+    }
+
+    /// <summary>
+    /// Decays nail stiffness toward baseline each epoch so nails don't permanently freeze.
+    /// decayRate=0.02 means nails regress 2% toward baseline per epoch.
+    /// </summary>
+    public void DecayNailStiffness(float decayRate = 0.02f)
+    {
+        float baseResistance = Config.DefaultRadius;   // initial resistance = radius
+        for (int r = 0; r < _nails.GetLength(0); r++)
+        for (int c = 0; c < _nails.GetLength(1); c++)
+        {
+            float baseDensity = 1f + ((r + c) % 5) * 0.05f;   // matches InitNails pattern
+            _nails[r, c].Resistance = _nails[r, c].Resistance * (1f - decayRate) + baseResistance * decayRate;
+            _nails[r, c].Density    = _nails[r, c].Density    * (1f - decayRate) + baseDensity    * decayRate;
+        }
     }
 
     private void InitNails(Random rng)

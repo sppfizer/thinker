@@ -12,6 +12,9 @@ using System.Text.Json;
 /// </summary>
 public static class AutoOptimizer
 {
+    private const string BestParamsPath = "prm_best_params.json";
+    private const string LegacyConfigPath = "prm_config.json";
+
     // ── Hyper-parameter bundle ─────────────────────────────────────────────────
 
     public record HyperParams(
@@ -43,29 +46,29 @@ public static class AutoOptimizer
         var rng = new Random(42);
 
         // ── Load / build starting params ──────────────────────────────────────
-        var bestParams = LoadBest(vocab);
-        var (bestVal, bestTest, bestGrid) = TrainAndEval(bestParams, vocab, trainSet, tuneSet, valSet, testSet);
+        var currentParams = LoadBest(vocab);
+        var (currentVal, currentTest, currentGrid) = TrainAndEval(currentParams, vocab, trainSet, tuneSet, valSet, testSet);
 
-        Console.WriteLine($"\nSTART  val={bestVal:P1}  test={bestTest:P1}");
-        PrintParams(bestParams, "       ");
+        Console.WriteLine($"\nSTART  val={currentVal:P1}  test={currentTest:P1}");
+        PrintParams(currentParams, "       ");
 
         // Global best — never regresses even when exploring random restarts
-        float globalBestVal   = bestVal;
-        float globalBestTest  = bestTest;
-        var   globalBestParams = bestParams;
+        float globalBestVal   = currentVal;
+        float globalBestTest  = currentTest;
+        var   globalBestParams = currentParams;
 
         // Persist start as initial best
-        bestGrid.SaveNails("prm_nails.bin");
-        Save(bestParams.Config);
+        currentGrid.SaveNails("prm_nails.bin");
+        Save(currentParams);
 
         int stuckFor = 0;
 
         for (int iter = 1; iter <= maxIterations; iter++)
         {
-            var cand = Perturb(bestParams, rng, stuckFor, vocab);
+            var cand = Perturb(currentParams, rng, stuckFor, vocab);
             var (valAcc, testAcc, grid) = TrainAndEval(cand, vocab, trainSet, tuneSet, valSet, testSet);
 
-            char arrow = valAcc > bestVal ? '↑' : valAcc < bestVal ? '↓' : '=';
+            char arrow = valAcc > currentVal ? '↑' : valAcc < currentVal ? '↓' : '=';
             string jumpTag = stuckFor >= 40 ? " [JUMP]" : stuckFor >= 20 ? " [nudge]" : "";
 
             Console.WriteLine(
@@ -75,23 +78,26 @@ public static class AutoOptimizer
                 $"sp={cand.Config.NailSpacing:F1} r={cand.Config.DefaultRadius:F2} LR={cand.LR:F3} ep={cand.TrainEpochs}×{cand.TrainPasses}+{cand.TuneEpochs}" +
                 jumpTag);
 
-            if (valAcc > bestVal)
+            if (valAcc > currentVal)
             {
-                bestVal    = valAcc;
-                bestTest   = testAcc;
-                bestParams = cand;
-                bestGrid   = grid;
-                stuckFor   = 0;
-
-                bestGrid.SaveNails("prm_nails.bin");
-                Save(bestParams.Config);
-                Console.WriteLine($"       *** NEW BEST  val={bestVal:P1}  test={bestTest:P1} ***");
+                currentVal    = valAcc;
+                currentTest   = testAcc;
+                currentParams = cand;
+                currentGrid   = grid;
+                stuckFor      = 0;
 
                 if (valAcc > globalBestVal)
                 {
                     globalBestVal    = valAcc;
                     globalBestTest   = testAcc;
                     globalBestParams = cand;
+                    currentGrid.SaveNails("prm_nails.bin");
+                    Save(cand);
+                    Console.WriteLine($"       *** GLOBAL BEST  val={globalBestVal:P1}  test={globalBestTest:P1} ***");
+                }
+                else
+                {
+                    Console.WriteLine($"       *** local best  val={currentVal:P1}  test={currentTest:P1} ***");
                 }
             }
             else
@@ -99,9 +105,9 @@ public static class AutoOptimizer
                 stuckFor++;
             }
 
-            if (bestVal >= targetAcc)
+            if (globalBestVal >= targetAcc)
             {
-                Console.WriteLine($"\n🎯  TARGET REACHED: val={bestVal:P1} ≥ {targetAcc:P0}");
+                Console.WriteLine($"\n🎯  TARGET REACHED: val={globalBestVal:P1} ≥ {targetAcc:P0}");
                 break;
             }
 
@@ -111,24 +117,20 @@ public static class AutoOptimizer
             {
                 var restartParams = RandomRestart(rng, vocab);
                 var (rv, rt, rg)  = TrainAndEval(restartParams, vocab, trainSet, tuneSet, valSet, testSet);
-                Console.WriteLine($"       [RESTART] random restart: val={rv:P1}  test={rt:P1}");
-                stuckFor = 0;
-                // Only switch to restart if it beats the global best
-                if (rv > bestVal)
+                Console.WriteLine($"       [RESTART] val={rv:P1}  test={rt:P1}");
+                stuckFor      = 0;
+                currentVal    = rv;
+                currentTest   = rt;
+                currentParams = restartParams;
+                currentGrid   = rg;
+                if (rv > globalBestVal)
                 {
-                    bestVal    = rv;
-                    bestTest   = rt;
-                    bestParams = restartParams;
-                    bestGrid   = rg;
-                    bestGrid.SaveNails("prm_nails.bin");
-                    Save(bestParams.Config);
-                    Console.WriteLine($"       Restart IS new best: val={bestVal:P1}");
-                }
-                else
-                {
-                    // Hill-climb from restart params but don't lose global best nails
-                    Console.WriteLine($"       Continuing hill-climb from restart (global best still {bestVal:P1})");
-                    bestParams = restartParams;  // explore new region
+                    globalBestVal    = rv;
+                    globalBestTest   = rt;
+                    globalBestParams = restartParams;
+                    currentGrid.SaveNails("prm_nails.bin");
+                    Save(restartParams);
+                    Console.WriteLine($"       Restart IS global best: val={globalBestVal:P1}");
                 }
             }
         }
@@ -205,7 +207,7 @@ public static class AutoOptimizer
         int   passes    = best.TrainPasses;
         float idfPow    = cfg.DeflectionIdfPower;
 
-        var pool = Enumerable.Range(0, 15).ToList();
+        var pool = Enumerable.Range(0, 16).ToList();
         Shuffle(pool, rng);
 
         for (int p = 0; p < nParams; p++)
@@ -319,22 +321,52 @@ public static class AutoOptimizer
 
     private static HyperParams LoadBest(VocabToken[] vocab)
     {
+        if (File.Exists(BestParamsPath))
+        {
+            var saved = JsonSerializer.Deserialize<HyperParams>(File.ReadAllText(BestParamsPath));
+            if (saved is not null) return saved;
+        }
+
+        if (File.Exists(LegacyConfigPath))
+        {
+            var legacyCfg = JsonSerializer.Deserialize<DiamondConfig>(File.ReadAllText(LegacyConfigPath));
+            if (legacyCfg is not null) return BuildDefaultHyperParams(vocab, legacyCfg);
+        }
+
+        return BuildDefaultHyperParams(vocab, BuildDefaultConfig(vocab));
+    }
+
+    private static HyperParams BuildDefaultHyperParams(VocabToken[] vocab, DiamondConfig cfg)
+    {
+        int totalRows  = Math.Clamp(vocab.Length / 6, 20, 80);
+        float wRatio   = (float)cfg.WideningRows / Math.Max(cfg.TotalRows, 1);
+        int trainEpoch = Math.Clamp(vocab.Length * 4, 100, 600);
+        int passes     = vocab.Length > 60 ? 2 : 1;  // multi-pass for larger vocab
+
+        return new HyperParams(cfg, LR: 0.10f, TuneLR: 0.01f,
+                               TrainEpochs: trainEpoch, TuneEpochs: 10,
+                               WideningRatio: wRatio, TrainPasses: passes,
+                               DeflectionIdfPower: cfg.DeflectionIdfPower);
+    }
+
+    private static DiamondConfig BuildDefaultConfig(VocabToken[] vocab)
+    {
         float ns       = 2.0f;
         float minEntry = vocab.Length * ns;
-        float maxWidth = minEntry * 4f;
+        // Cap at 2× entry: 4× created a 27M-parameter grid for 209 tokens that
+        // training (337K steps) could never fill — average 2 updates/param, no convergence.
+        float maxWidth = minEntry * 2f;
 
         // Scale starting config with vocabulary size.
         // Larger vocab → more routing depth and more training needed.
-        // Rule of thumb: ~1 row per 4 tokens, ~2 epochs per token, 2 passes for large vocabs.
-        int   totalRows  = Math.Clamp(vocab.Length / 4, 30, 150);
+        // Rule of thumb: ~1 row per 6 tokens (capped), ~4 epochs per token, 2 passes for large vocabs.
+        int   totalRows  = Math.Clamp(vocab.Length / 6, 20, 80);
         float wRatio     = 0.75f;
         int   wRows      = (int)(totalRows * wRatio);
         int   nRows      = Math.Max(3, totalRows - wRows);
-        int   trainEpoch = Math.Clamp(vocab.Length * 2, 80, 400);
-        int   passes     = vocab.Length > 60 ? 2 : 1;  // multi-pass for larger vocab
         float idfPow     = vocab.Length > 60 ? 0.5f : 0f;
 
-        var cfg = new DiamondConfig
+        return new DiamondConfig
         {
             RoleName         = "Analyst",
             WideningRows     = wRows,
@@ -351,16 +383,13 @@ public static class AutoOptimizer
             NailSpacing      = ns,
             InputWindowSize  = 3,
         };
-        return new HyperParams(cfg, LR: 0.10f, TuneLR: 0.01f,
-                               TrainEpochs: trainEpoch, TuneEpochs: 10,
-                               WideningRatio: wRatio, TrainPasses: passes,
-                               DeflectionIdfPower: idfPow);
     }
 
-    private static void Save(DiamondConfig cfg)
+    private static void Save(HyperParams hp)
     {
-        var json = JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText("prm_config.json", json);
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(BestParamsPath, JsonSerializer.Serialize(hp, options));
+        File.WriteAllText(LegacyConfigPath, JsonSerializer.Serialize(hp.Config, options));
     }
 
     // ── Display helpers ───────────────────────────────────────────────────────

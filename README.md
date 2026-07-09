@@ -97,17 +97,44 @@ A **router diamond** (shallower, cheaper) selects the best role for each input. 
 
 ## Status
 
-🟢 **Prototype** — design plus a runnable toy implementation and browser visualizer.
+🟡 **All blocking bugs fixed — ready for first real optimizer run.**
 
-Run the visualizer with:
+### How to run the optimizer (fresh start):
 
-```bash
-cd src/PRM/PRM.App
-dotnet run -- viz the cat sat
+```powershell
+cd C:\src\Claude\Thinker
+# Delete stale state first — these were from tiny_corpus (40 tokens, incompatible)
+Remove-Item prm_best_params.json, prm_config.json -ErrorAction SilentlyContinue
+# Start optimizer on the 209-token corpus
+dotnet run --project src/PRM/PRM.App -- --corpus data/simple_corpus.txt autooptimize
 ```
 
-Open questions remain (grid depth, nail initialization, force decay, training stabilization). The thinking continues.
+### How to visualize the trained model:
+
+```powershell
+cd C:\src\Claude\Thinker
+dotnet run --project src/PRM/PRM.App -- viz the cat sat
+# Browser opens automatically at http://localhost:5000
+# Use the combobox to select word combinations and watch balls route
+```
+
+### Key training facts
+
+| Parameter | Value | Why |
+|---|---|---|
+| Corpus | `data/simple_corpus.txt` | 209 tokens / 604 samples — large enough to stress-test routing |
+| Split | 70/10/20 | 422 train / 60 tune / 122 val, genuinely separate |
+| Default rows | vocab/6 capped at 80 | 4× was too sparse (27M params, 2 updates/param avg) |
+| Default MaxWidth | 2× entryWidth | balance routing capacity with training coverage |
+| Deflection | `offX * maxStepX * idf` | scaled to per-row budget; output-slot reachable from anywhere |
+| Nail update | error-correction form | natural equilibrium, no drift to ±1 |
+
+### Bug-fix history summary
+
+15 blocking and methodology bugs were found and fixed in a joint audit by GPT-5.5 and Claude Opus 4.8. See `model-insight.md §3.1` and `thinking-process.md §Implementation Learnings` for the full table.
+
+The most critical fix (bug #20 in model-insight.md) was deflection scaling: `rawStepX = offX * alpha` gave a maximum travel of 21 grid units over 35 rows on a 418-unit-wide output zone — structurally impossible to route correctly. Fixed to `rawStepX = offX * maxStepX * idf` so the per-row budget scales with the actual row width.
 
 ---
 
-*Co-designed by sppfizer + GitHub Copilot (GPT-5.4 mini) — 2026-07-09*
+*Co-designed by sppfizer + GitHub Copilot — 2026-07-09*

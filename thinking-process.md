@@ -244,8 +244,11 @@ Bottom:
 ### Turn 13 — Copilot response
 - Added nail-contact memory to balls so successful low-contact paths can reinforce the nails they touched
 - Made nail updates depend on angle disagreement with the target direction, ball mass, resistance, and density inertia
-- Added widening-phase bounce-back, narrowing-phase drop-off, stuck detection, and retry-based re-training per sample
+- Added widening-phase drop-off, narrowing-phase bounce-back, stuck detection, and retry-based re-training per sample
 - Ran the optimizer sweep on the corpus again: flat baseline val=0.0%, sqrt-IDF val=11.1%, inverse-IDF val=22.2%
+- Found and fixed an optimizer bug where the IDF power case was unreachable in `AutoOptimizer.Perturb`; the next sweep should now actually explore `DeflectionIdfPower`
+- Found and fixed the legacy diameter alias so config-specified radius values actually apply, and aligned the widening/narrowing boundary so geometry, magnet, and bounds all agree
+- Found and fixed the auto-scale clone so `DeflectionIdfPower` survives resize, which keeps the IDF sweep live during optimization
 
 
 
@@ -268,6 +271,18 @@ Bottom:
 
 6. **Ball velocity explosion** — elastic collisions between many balls can add velocity repeatedly per row, making velocities grow without bound → positions become Infinity/NaN → `NailColumn` returned garbage array indices → `IndexOutOfRangeException`.  *Fix*: clamp velocity to ±5 after each integration step; guard `NailColumn` against NaN/Infinity inputs.
 
+7. **MagnetField zero force at widest rows** — midpoint (widest rows, most nails) returned force=0; those rows never trained. *Fix*: constant 0.4 in widening, linear 0.4→1.0 ramp in narrowing.
+
+8. **Stiffening ratchet** — every nail touched during training gained Resistance/Density permanently. After ~10 epochs all nails saturated: inertia reached 9.0× initial, effective LR collapsed 12×, model froze at 33%. *Fix*: removed per-step stiffening; added SoftenContacts on miss; 2% per-epoch DecayNailStiffness toward InitNails baseline.
+
+9. **Wrong nail trained** — `ApplyNailUpdates` recomputed column from post-deflection ball position; a different nail than the one that actually deflected the ball got the update. *Fix*: store `LastNailCol`/`LastNailTIdx` before deflecting; use stored values in update.
+
+10. **Force-accumulation (no equilibrium)** — nail update `newX += lr * force` had no natural rest point; nails oscillated to ±1 boundary. *Fix*: error-correction form `newX = currentX + scale*(idealX − currentX)`; scale clamped to [0,1] to prevent overshoot.
+
+11. **Optimizer restart regression** — `bestVal` stayed at global best during restarts; the new local region could never improve its own starting point. *Fix*: separated `currentVal`/`currentParams` (local hill-climb) from `globalBestVal`/`globalBestParams` (never regresses).
+
+12. **Deflection scale invariant** — `rawStepX = offX * alpha` (constant ≤0.6 units/row regardless of grid width). For simple_corpus (418-unit output zone, 35 rows): max total deflection = 21 units = 5% of output zone → balls structurally unable to reach target slots → 0.8% accuracy (barely above random). *Fix*: `rawStepX = offX * maxStepX * idf` where `maxStepX = rowWidth/TotalRows * alpha`. Also normalised training ideal: `normForceX = forceX * TotalRows / rowWidth` so idealX saturates at 1 when ball is ≥one row-budget away from target.
+
 ---
 
 ### What the Optimizer Found
@@ -281,7 +296,7 @@ After fixing the additive-perturbation bug (so G and collision could actually be
 
 ---
 
-### Current Accuracy Milestone
+### Phase 1 Accuracy Milestone (tiny_corpus, 40 tokens)
 
 | Metric | Value |
 |---|---|
@@ -290,14 +305,26 @@ After fixing the additive-perturbation bug (so G and collision could actually be
 | Random baseline (1/40 tokens) | 2.5% |
 | Model performance | **13× above random** |
 
-Before the grid-sizing, IDF, and split fixes the model achieved only 5.8% — well below what would be expected from a functional routing model.
+Ceiling analysis: tiny_corpus has ~67% hapax legomena (tokens appearing once) → theoretical ceiling ~33-44%. The model hit the structural ceiling. All further optimization requires the 209-token simple_corpus.
+
+---
+
+### Phase 2 Status — Blocking Bugs Fixed, Ready for Real Run
+
+After the 15-bug audit-and-fix cycle (bugs 8–12 above + methodology fixes), the model is ready for its first meaningful optimization run on `simple_corpus.txt`. The deflection-scaling fix (bug #12) was the last critical blocker: without it, balls could never reach their target output slots on a 209-token grid regardless of hyperparameters.
+
+**How to run:**
+```
+cd C:\src\Claude\Thinker
+dotnet run --project src/PRM/PRM.App -- --corpus data/simple_corpus.txt autooptimize
+```
 
 ---
 
 ### Next Steps
 
-- Ball interaction (gravity now enabled after additive-perturbation fix) — validate it improves accuracy beyond 33.3%
+- First real optimizer run on simple_corpus.txt — expect >33% val once deflection scaling works
+- Investigate: should `anglePenalty = 1 + (1-dot)` be damped? (Opus flagged it amplifies oscillations for conflicting samples)
 - Larger corpus: more tokens and more samples to test routing capacity at scale
-- Position-aware routing validation: confirm that context positions 0 vs 2 develop distinct nail offsets
 - Multi-token generation loop (predict → append → predict again)
-- Eventually: real text corpora beyond the toy 40-token set
+- Eventually: real text corpora beyond the toy 209-token set
