@@ -323,7 +323,9 @@ dotnet run --project src/PRM/PRM.App -- --corpus data/simple_corpus.txt autoopti
 
 ### Next Steps
 
-- First real optimizer run on simple_corpus.txt — expect >33% val once deflection scaling works
+- GPU mini-batch training is implemented: samples are packed into one OpenCL launch, one workgroup handles each sample, offset updates use averaged atomic deltas, and a projection pass restores unit-circle constraints.
+- Re-run fair-context `autooptimize --gpu` with mini-batches, then compare quality against the sequential GPU path to make sure averaged updates do not regress learning.
+- First real optimizer run on simple_corpus.txt — old fixed-3-token results are not NN-comparable.
 - Investigate: should `anglePenalty = 1 + (1-dot)` be damped? (Opus flagged it amplifies oscillations for conflicting samples)
 - Larger corpus: more tokens and more samples to test routing capacity at scale
 - Multi-token generation loop (predict → append → predict again)

@@ -97,7 +97,7 @@ A **router diamond** (shallower, cheaper) selects the best role for each input. 
 
 ## Status
 
-🟡 **All blocking bugs fixed — ready for first real optimizer run.**
+🟡 **Fair-context training and mini-batch OpenCL GPU training are implemented; next bottleneck is larger-batch scoring/update quality.**
 
 ### How to run the optimizer (fresh start):
 
@@ -107,6 +107,16 @@ cd C:\src\Claude\Thinker
 Remove-Item prm_best_params.json, prm_config.json -ErrorAction SilentlyContinue
 # Start optimizer on the 209-token corpus
 dotnet run --project src/PRM/PRM.App -- --corpus data/simple_corpus.txt autooptimize
+# Use GPU training for supported candidate configs
+dotnet run --project src/PRM/PRM.App -- --corpus data/simple_corpus.txt autooptimize 50 0.60 --gpu
+```
+
+### How to run GPU diagnostics/training:
+
+```powershell
+cd C:\src\Claude\Thinker
+dotnet run --project src/PRM/PRM.App -- gpu
+dotnet run --project src/PRM/PRM.App -- train --gpu --batch 16
 ```
 
 ### How to visualize the trained model:
@@ -128,6 +138,9 @@ dotnet run --project src/PRM/PRM.App -- viz the cat sat
 | Default MaxWidth | 2× entryWidth | balance routing capacity with training coverage |
 | Deflection | `offX * maxStepX * idf` | scaled to per-row budget; output-slot reachable from anywhere |
 | Nail update | error-correction form | natural equilibrium, no drift to ±1 |
+| GPU backend | ILGPU/OpenCL | works on Intel Iris Xe and should also target OpenCL-capable AMD/NVIDIA devices |
+| GPU mini-batch | `--batch N` | packs many samples per GPU launch; default is 16 |
+| Current GPU bottleneck | scoring/replay orchestration | still partly CPU-side; next step is larger batch scoring and quality comparison |
 
 ### Bug-fix history summary
 

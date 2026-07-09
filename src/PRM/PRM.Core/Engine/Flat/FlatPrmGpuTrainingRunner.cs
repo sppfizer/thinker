@@ -4,7 +4,8 @@ namespace PRM.Core.Engine.Flat;
 
 public sealed record FlatPrmGpuTrainingOptions(
     int? OpenClDeviceIndex = null,
-    bool AllowFlatCpuFallback = true);
+    bool AllowFlatCpuFallback = true,
+    int MiniBatchSize = 16);
 
 public sealed record FlatPrmGpuTrainingSampleResult(
     int Predicted,

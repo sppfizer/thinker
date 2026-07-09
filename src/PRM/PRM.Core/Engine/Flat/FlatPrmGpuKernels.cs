@@ -1216,6 +1216,411 @@ internal static class FlatPrmGpuKernels
         }
     }
 
+    public static void RunTrainingBatchRowsGrouped(
+        Index1D index,
+        FlatPrmGpuKernelConfig config,
+        int batchCount,
+        int maxBalls,
+        float learningRate,
+        ArrayView1D<int, Stride1D.Dense> ballCounts,
+        ArrayView1D<float, Stride1D.Dense> targetCentres,
+        ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense> balls,
+        ArrayView1D<float, Stride1D.Dense> tokenOffsetX,
+        ArrayView1D<float, Stride1D.Dense> tokenOffsetY,
+        ArrayView1D<float, Stride1D.Dense> sharedOffsetX,
+        ArrayView1D<float, Stride1D.Dense> sharedOffsetY,
+        ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense> nailProperties,
+        ArrayView1D<int, Stride1D.Dense> contactColumns,
+        ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense> rowGeometry)
+    {
+        int global = index;
+        int sampleIndex = maxBalls > 0 ? global / maxBalls : 0;
+        int lane = Group.LinearIndex;
+        if (sampleIndex < 0 || sampleIndex >= batchCount || sampleIndex >= ballCounts.IntLength)
+            return;
+
+        int activeBallCount = ballCounts[sampleIndex];
+        if (activeBallCount < 0) activeBallCount = 0;
+        if (activeBallCount > maxBalls) activeBallCount = maxBalls;
+        int sampleBase = sampleIndex * maxBalls;
+        int contactStride = ballCounts.IntLength * maxBalls;
+        float targetCentre = targetCentres[sampleIndex];
+        float batchScale = 1f / XMath.Max(batchCount, 1);
+
+        for (int row = 0; row < config.TotalRows; row++)
+        {
+            FlatPrmGpuRowGeometry geometry = rowGeometry[row];
+
+            if (lane < activeBallCount)
+            {
+                int ballIndex = sampleBase + lane;
+                FlatPrmGpuBallState state = balls[ballIndex];
+                if (state.Active != 0)
+                {
+                    float position = state.Position;
+                    float velocity = state.Velocity;
+                    int lastCol = -1;
+                    int lastToken = -1;
+
+                    int col = NailColumn(position, row, config.NailSpacing, geometry.LeftBorder);
+                    if (col >= 0 && col < geometry.RowNailCount)
+                    {
+                        int slot = TokenSlot(config.VocabSize, state.TokenId);
+                        int tIdx = TokenIndex(config.WindowSize, config.TokenSlotCount, state.ContextPosition, slot);
+                        if (tIdx >= 0 && tIdx < config.TokenKeyCount)
+                        {
+                            float blend = XMath.Clamp(config.SharedOffsetBlend, 0f, 1f);
+                            int tokenOffsetIndex = ((row * config.MaxColumns + col) * config.TokenKeyCount) + tIdx;
+                            float offX = tokenOffsetX[tokenOffsetIndex];
+                            float offY = tokenOffsetY[tokenOffsetIndex];
+                            if (blend > 0f)
+                            {
+                                int sharedOffsetIndex = ((row * config.MaxColumns + col) * config.TokenSlotCount) + slot;
+                                offX = offX * (1f - blend) + sharedOffsetX[sharedOffsetIndex] * blend;
+                                offY = offY * (1f - blend) + sharedOffsetY[sharedOffsetIndex] * blend;
+                            }
+
+                            FlatPrmGpuNailProperties nail = nailProperties[row * config.MaxColumns + col];
+                            float idf = XMath.Pow(1f / XMath.Max(state.Mass, 0.01f), config.DeflectionIdfPower);
+                            float rowWidth = XMath.Max(geometry.RowWidth, 1f);
+                            float maxStepX = rowWidth / config.TotalRows * config.DeflectionAlpha;
+                            float rawStepX = offX * maxStepX * idf;
+
+                            lastCol = col;
+                            lastToken = tIdx;
+                            contactColumns[row * contactStride + ballIndex] = col;
+                            position += XMath.Clamp(rawStepX, -maxStepX, maxStepX);
+                            velocity += offY * config.DeflectionAlphaY * nail.Radius * idf;
+                        }
+                    }
+
+                    balls[ballIndex] = state.With(position, velocity, lastCol, lastToken, state.Active, state.Stuck);
+                }
+            }
+
+            Group.Barrier();
+
+            if (lane == 0 && (config.GravityG > 0f || config.CollisionRadius > 0f))
+            {
+                for (int i = 0; i < activeBallCount; i++)
+                for (int j = i + 1; j < activeBallCount; j++)
+                {
+                    int leftIndex = sampleBase + i;
+                    int rightIndex = sampleBase + j;
+                    FlatPrmGpuBallState left = balls[leftIndex];
+                    FlatPrmGpuBallState right = balls[rightIndex];
+                    if (left.Active == 0 || right.Active == 0)
+                        continue;
+
+                    float d = XMath.Abs(left.Position - right.Position);
+                    if (d > config.ProximityBand)
+                        continue;
+
+                    float leftVelocity = left.Velocity;
+                    float rightVelocity = right.Velocity;
+
+                    if (config.GravityG > 0f)
+                    {
+                        float g = config.GravityG * left.Mass * right.Mass / (d * d + 1e-6f);
+                        float dir = Sign(right.Position - left.Position);
+                        leftVelocity += g * dir * config.DeltaTime;
+                        rightVelocity -= g * dir * config.DeltaTime;
+                    }
+
+                    if (config.CollisionRadius > 0f && d < config.CollisionRadius)
+                    {
+                        float mi = left.Mass;
+                        float mj = right.Mass;
+                        float denom = XMath.Max(mi + mj, 1e-6f);
+                        float vi = leftVelocity;
+                        float vj = rightVelocity;
+                        leftVelocity = ((mi - mj) * vi + 2f * mj * vj) / denom;
+                        rightVelocity = ((mj - mi) * vj + 2f * mi * vi) / denom;
+                    }
+
+                    balls[leftIndex] = left.With(left.Position, leftVelocity, left.LastNailColumn, left.LastTokenIndex, left.Active, left.Stuck);
+                    balls[rightIndex] = right.With(right.Position, rightVelocity, right.LastNailColumn, right.LastTokenIndex, right.Active, right.Stuck);
+                }
+            }
+
+            Group.Barrier();
+
+            if (lane == 0 && learningRate > 0f)
+            {
+                for (int i = 0; i < activeBallCount; i++)
+                {
+                    FlatPrmGpuBallState sample = balls[sampleBase + i];
+                    if (sample.Active == 0)
+                        continue;
+
+                    int tokenId = sample.TokenId;
+                    bool isPredictionProbe = tokenId == -1;
+                    if (tokenId < 0 && !isPredictionProbe)
+                        continue;
+
+                    float probeTrainingWeight = XMath.Max(config.PredictionProbeTrainingWeight, 0f);
+                    if (isPredictionProbe && probeTrainingWeight <= 0f)
+                        continue;
+
+                    int col = sample.LastNailColumn;
+                    if (col < 0 || col >= geometry.RowNailCount)
+                        continue;
+
+                    int tIdx = sample.LastTokenIndex;
+                    if (tIdx < 0 || tIdx >= config.TokenKeyCount)
+                        continue;
+
+                    int slot = TokenSlot(config.VocabSize, tokenId);
+                    if (slot < 0 || slot >= config.TokenSlotCount)
+                        continue;
+
+                    float forceX = MagnetForce(config, row, sample.Position, targetCentre);
+                    float rowWidth = XMath.Max(geometry.RowWidth, 1f);
+                    float idealX = forceX * config.TotalRows / rowWidth;
+                    float idealY = idealX * 0.25f;
+                    float massFactor = isPredictionProbe
+                        ? probeTrainingWeight
+                        : XMath.Sqrt(XMath.Max(sample.Mass, 0.01f)) * XMath.Clamp(sample.RelevanceWeight, 0f, 1f);
+                    if (massFactor <= 0f)
+                        continue;
+
+                    int nailIndex = row * config.MaxColumns + col;
+                    FlatPrmGpuNailProperties nail = nailProperties[nailIndex];
+                    float density = XMath.Max(nail.Density, 0.1f);
+                    float inertia = XMath.Max(nail.Resistance * density * (1f + nail.Radius), 0.05f);
+                    float scale = XMath.Clamp(learningRate * massFactor / inertia, 0f, 1f) * batchScale;
+                    if (scale <= 0f)
+                        continue;
+
+                    AddOffsetDelta(
+                        config,
+                        row,
+                        col,
+                        tIdx,
+                        slot,
+                        idealX,
+                        idealY,
+                        scale,
+                        tokenOffsetX,
+                        tokenOffsetY,
+                        sharedOffsetX,
+                        sharedOffsetY);
+                }
+            }
+
+            Group.Barrier();
+
+            if (lane < activeBallCount)
+            {
+                int ballIndex = sampleBase + lane;
+                FlatPrmGpuBallState state = balls[ballIndex];
+                if (state.Active != 0)
+                {
+                    float position = state.Position;
+                    float velocity = state.Velocity;
+                    float left = geometry.LeftBorder;
+                    float right = geometry.RightBorder;
+                    float fallbackPosition = (left + right) * 0.5f;
+
+                    if (XMath.IsNaN(velocity) || XMath.IsInfinity(velocity))
+                        velocity = 0f;
+
+                    velocity = XMath.Clamp(velocity, -config.MaxVelocity, config.MaxVelocity);
+                    position += velocity * config.DeltaTime;
+
+                    if (XMath.IsNaN(position) || XMath.IsInfinity(position))
+                        position = fallbackPosition;
+
+                    int active = state.Active;
+                    int stuck = state.Stuck;
+                    if (position < left)
+                    {
+                        if (row <= config.WideningRows)
+                        {
+                            active = 0;
+                        }
+                        else
+                        {
+                            position = left + (left - position) * 0.35f;
+                            velocity = XMath.Abs(velocity) * 0.55f;
+                        }
+                    }
+                    else if (position > right)
+                    {
+                        if (row <= config.WideningRows)
+                        {
+                            active = 0;
+                        }
+                        else
+                        {
+                            position = right - (position - right) * 0.35f;
+                            velocity = -XMath.Abs(velocity) * 0.55f;
+                        }
+                    }
+
+                    if (active != 0 && row > config.WideningRows && XMath.Abs(velocity) <= 0.04f)
+                    {
+                        int col = NailColumn(position, row, config.NailSpacing, left);
+                        if (col >= 0 && col < geometry.RowNailCount)
+                        {
+                            float stagger = (row & 1) == 1 ? config.NailSpacing * 0.5f : 0f;
+                            float nailX = left + stagger + col * config.NailSpacing;
+                            if (XMath.Abs(position - nailX) <= XMath.Max(config.NailSpacing * 0.18f, 0.15f))
+                            {
+                                stuck = 1;
+                                active = 0;
+                            }
+                        }
+                    }
+
+                    balls[ballIndex] = state.With(position, velocity, state.LastNailColumn, state.LastTokenIndex, active, stuck);
+                }
+            }
+
+            Group.Barrier();
+        }
+    }
+
+    public static void ProjectOffsetPair(
+        Index1D index,
+        ArrayView1D<float, Stride1D.Dense> offsetX,
+        ArrayView1D<float, Stride1D.Dense> offsetY)
+    {
+        int i = index;
+        if (i < 0 || i >= offsetX.IntLength || i >= offsetY.IntLength)
+            return;
+
+        float x = offsetX[i];
+        float y = offsetY[i];
+        ProjectUnitCircle(ref x, ref y);
+        offsetX[i] = x;
+        offsetY[i] = y;
+    }
+
+    public static void ClearFloatBuffer(Index1D index, ArrayView1D<float, Stride1D.Dense> buffer)
+    {
+        int i = index;
+        if (i >= 0 && i < buffer.IntLength)
+            buffer[i] = 0f;
+    }
+
+    public static void ApplyPostTrainingNailAdjustmentBatch(
+        Index1D index,
+        FlatPrmGpuKernelConfig config,
+        int batchCount,
+        int maxBalls,
+        float learningRate,
+        ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense> balls,
+        ArrayView1D<int, Stride1D.Dense> contactColumns,
+        ArrayView1D<int, Stride1D.Dense> correctFlags,
+        ArrayView1D<float, Stride1D.Dense> targetCentres,
+        ArrayView1D<float, Stride1D.Dense> resistanceDeltas,
+        ArrayView1D<float, Stride1D.Dense> densityDeltas)
+    {
+        int sampleIndex = index;
+        if (sampleIndex < 0 || sampleIndex >= batchCount || sampleIndex >= correctFlags.IntLength)
+            return;
+
+        int sampleBase = sampleIndex * maxBalls;
+        int contactStride = correctFlags.IntLength * maxBalls;
+        int correct = correctFlags[sampleIndex];
+        float targetCentre = targetCentres[sampleIndex];
+
+        if (correct != 0)
+        {
+            int minContacts = 2147483647;
+            int focusCount = 0;
+            float massSum = 0f;
+            for (int i = 0; i < maxBalls; i++)
+            {
+                FlatPrmGpuBallState state = balls[sampleBase + i];
+                if (!IsReinforceCandidate(config, state, targetCentre))
+                    continue;
+
+                int contactCount = CountContacts(config, contactStride, sampleBase + i, contactColumns);
+                if (contactCount < minContacts)
+                {
+                    minContacts = contactCount;
+                    focusCount = 1;
+                    massSum = XMath.Sqrt(XMath.Max(state.Mass, 0.01f));
+                }
+                else if (contactCount == minContacts)
+                {
+                    focusCount++;
+                    massSum += XMath.Sqrt(XMath.Max(state.Mass, 0.01f));
+                }
+            }
+
+            if (focusCount <= 0)
+                return;
+
+            float boost = learningRate * (massSum / focusCount) * 0.05f;
+            for (int i = 0; i < maxBalls; i++)
+            {
+                int ballIndex = sampleBase + i;
+                FlatPrmGpuBallState state = balls[ballIndex];
+                if (!IsReinforceCandidate(config, state, targetCentre))
+                    continue;
+                if (CountContacts(config, contactStride, ballIndex, contactColumns) != minContacts)
+                    continue;
+
+                for (int row = 0; row < config.TotalRows; row++)
+                {
+                    int col = contactColumns[row * contactStride + ballIndex];
+                    if (col < 0 || col >= config.MaxColumns)
+                        continue;
+                    if (HasPriorBatchContact(config, maxBalls, sampleBase, i, row, col, 1, minContacts, targetCentre, balls, contactColumns, contactStride))
+                        continue;
+
+                    int nailIndex = row * config.MaxColumns + col;
+                    Atomic.Add(ref resistanceDeltas[nailIndex], boost);
+                    Atomic.Add(ref densityDeltas[nailIndex], boost * 0.5f);
+                }
+            }
+        }
+        else
+        {
+            float drop = learningRate * 0.05f;
+            for (int i = 0; i < maxBalls; i++)
+            {
+                int ballIndex = sampleBase + i;
+                FlatPrmGpuBallState state = balls[ballIndex];
+                if (!IsSoftenCandidate(state))
+                    continue;
+
+                for (int row = 0; row < config.TotalRows; row++)
+                {
+                    int col = contactColumns[row * contactStride + ballIndex];
+                    if (col < 0 || col >= config.MaxColumns)
+                        continue;
+                    if (HasPriorBatchContact(config, maxBalls, sampleBase, i, row, col, 0, 0, targetCentre, balls, contactColumns, contactStride))
+                        continue;
+
+                    int nailIndex = row * config.MaxColumns + col;
+                    Atomic.Add(ref resistanceDeltas[nailIndex], -drop);
+                    Atomic.Add(ref densityDeltas[nailIndex], -drop * 0.5f);
+                }
+            }
+        }
+    }
+
+    public static void ApplyNailPropertyDeltas(
+        Index1D index,
+        ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense> nailProperties,
+        ArrayView1D<float, Stride1D.Dense> resistanceDeltas,
+        ArrayView1D<float, Stride1D.Dense> densityDeltas)
+    {
+        int i = index;
+        if (i < 0 || i >= nailProperties.IntLength)
+            return;
+
+        FlatPrmGpuNailProperties nail = nailProperties[i];
+        nailProperties[i] = new FlatPrmGpuNailProperties(
+            nail.Radius,
+            XMath.Clamp(nail.Resistance + resistanceDeltas[i], 0.05f, 2.5f),
+            XMath.Clamp(nail.Density + densityDeltas[i], 0.1f, 4.0f));
+    }
+
     private static int TokenSlot(int vocabSize, int tokenId) =>
         tokenId >= 0 && tokenId < vocabSize ? tokenId : vocabSize;
 
@@ -1340,6 +1745,64 @@ internal static class FlatPrmGpuKernels
         tokenOffsetY[tokenOffsetIndex] = newY;
         sharedOffsetX[sharedOffsetIndex] = newSharedX;
         sharedOffsetY[sharedOffsetIndex] = newSharedY;
+    }
+
+    private static void AddOffsetDelta(
+        FlatPrmGpuKernelConfig config,
+        int row,
+        int col,
+        int tIdx,
+        int slot,
+        float idealX,
+        float idealY,
+        float scale,
+        ArrayView1D<float, Stride1D.Dense> tokenOffsetX,
+        ArrayView1D<float, Stride1D.Dense> tokenOffsetY,
+        ArrayView1D<float, Stride1D.Dense> sharedOffsetX,
+        ArrayView1D<float, Stride1D.Dense> sharedOffsetY)
+    {
+        float blend = XMath.Clamp(config.SharedOffsetBlend, 0f, 1f);
+        float posScale = scale * (1f - blend);
+        float sharedScale = scale * blend;
+        int tokenOffsetIndex = ((row * config.MaxColumns + col) * config.TokenKeyCount) + tIdx;
+        int sharedOffsetIndex = ((row * config.MaxColumns + col) * config.TokenSlotCount) + slot;
+
+        Atomic.Add(ref tokenOffsetX[tokenOffsetIndex], posScale * (idealX - tokenOffsetX[tokenOffsetIndex]));
+        Atomic.Add(ref tokenOffsetY[tokenOffsetIndex], posScale * (idealY - tokenOffsetY[tokenOffsetIndex]));
+        Atomic.Add(ref sharedOffsetX[sharedOffsetIndex], sharedScale * (idealX - sharedOffsetX[sharedOffsetIndex]));
+        Atomic.Add(ref sharedOffsetY[sharedOffsetIndex], sharedScale * (idealY - sharedOffsetY[sharedOffsetIndex]));
+    }
+
+    private static bool HasPriorBatchContact(
+        FlatPrmGpuKernelConfig config,
+        int maxBalls,
+        int sampleBase,
+        int ballOffset,
+        int row,
+        int col,
+        int correct,
+        int minContacts,
+        float targetCentre,
+        ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense> balls,
+        ArrayView1D<int, Stride1D.Dense> contactColumns,
+        int contactStride)
+    {
+        for (int prior = 0; prior < ballOffset && prior < maxBalls; prior++)
+        {
+            int priorIndex = sampleBase + prior;
+            FlatPrmGpuBallState priorState = balls[priorIndex];
+            bool qualifies = correct != 0
+                ? IsReinforceCandidate(config, priorState, targetCentre) &&
+                  CountContacts(config, contactStride, priorIndex, contactColumns) == minContacts
+                : IsSoftenCandidate(priorState);
+            if (!qualifies)
+                continue;
+
+            if (contactColumns[row * contactStride + priorIndex] == col)
+                return true;
+        }
+
+        return false;
     }
 
     private static void ProjectUnitCircle(ref float x, ref float y)

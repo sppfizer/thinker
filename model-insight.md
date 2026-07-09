@@ -848,11 +848,13 @@ score[t]  =  Σ_i  m_i · 𝟙[ x_i ∈ [slot_left_t, slot_right_t] ]
 | Ball–ball gravity | Pairs within proximity band | O(B·k) per row |
 | Open border removal | Balls (independent) | O(B) per row |
 | Output scoring | Balls (parallel reduce into slots) | O(B·log V) |
-| Training batch | Samples (independent) | O(S) outer loop |
+| Training batch | Samples/workgroups | O(S) outer loop; best GPU utilization requires many samples per launch |
 
 Total: `O(S · R · (B·k + C))` — no stored activation graph, no backward pass.
 
 > `S` = batch size, `R` = total rows, `B` = surviving balls per row, `k` = avg gravity neighbours, `C` = nail columns per row.
+
+**2026-07-09 GPU finding:** ILGPU/OpenCL parity is working and `train --gpu` really uses the Intel Iris Xe OpenCL device. One-sample-at-a-time kernels underutilized the GPU, so training now supports mini-batches: many causal samples are packed into one launch, one workgroup handles each sample, shared offset updates use averaged atomic deltas, and a projection pass restores unit-circle constraints. Remaining GPU work is moving more scoring/replay bookkeeping and quality validation into batch-aware flows.
 
 ---
 
@@ -873,7 +875,7 @@ No magnet. No nail updates. Purely deterministic routing.
 
 ---
 
-## 11. Implementation Status & Findings (as of 2026-07-08)
+## 11. Implementation Status & Findings (as of 2026-07-09)
 
 ### 11.1 Architecture (Current State)
 
@@ -896,6 +898,7 @@ No magnet. No nail updates. Purely deterministic routing.
 - **IDF-weighted voting**: vote weight = 1/mass — rare tokens are more discriminative; common tokens like "the" contribute less.  Without this, "the" dominated every slot.
 - **Position-aware routing**: each ball carries its context-window position (0, 1, 2 …); nail offsets stored per-position × per-token: `offX[row, col, pos × V + tokenId]`.  "cat" at position 0 routes independently from "cat" at position 2.
 - **Ball-to-ball interaction**: gravity (attraction) + elastic collision between nearby balls — true context sensitivity; combined ball positions produce emergent routing paths.  Was previously frozen at G = 0 because the optimizer used multiplicative perturbation starting from 0.
+- **Fair-context input**: PRM training now uses causal multi-token context windows comparable to next-token NN training. Fixed 3-token-window results are no longer accepted as comparable.
 
 ---
 
@@ -903,6 +906,8 @@ No magnet. No nail updates. Purely deterministic routing.
 
 - **Forward-only**: balls fall through grid while nails are nudged toward the target output slot (magnet force)
 - **No backpropagation** — nails update in-place during the single forward pass
+- **GPU path**: ILGPU/OpenCL supports flat nail deflection, gravity/collision interaction, velocity integration, bounds/stuck handling, live token/shared offset updates, GPU-resident nail property updates, and mini-batches via `--batch N`.
+- **Known GPU bottleneck**: scoring/replay orchestration is still partly CPU-side, and mini-batch averaged updates must be benchmarked against sequential updates for quality.
 - LR decay per epoch (default 0.97) prevents oscillation at the unit-circle boundary
 - Best-epoch nails saved and restored on validation drop (rollback)
 
@@ -937,6 +942,7 @@ No magnet. No nail updates. Purely deterministic routing.
 
 - Hill-climbing auto-optimiser with 500 iterations, random restarts, global best tracking
 - Explores: TotalRows, WideningRatio, α, αY, gravity G, collision R, NailSpacing, MaxWidth, LR, epochs
+- `autooptimize --gpu` is available for supported candidate configs, with CPU fallback for unsupported structural features.
 - **WideningRatio converges to 79–83%** consistently — confirms: think more, summarise less
 - Preferred NailSpacing: 1.8–1.9 (slightly tighter than default 2.0)
 - More epochs needed for convergence at this scale: 80–130 vs early default of 30
@@ -947,6 +953,8 @@ No magnet. No nail updates. Purely deterministic routing.
 ### 11.6 Next Steps
 
 - [ ] Larger corpus (more tokens, more samples) to stress-test routing capacity
+- [x] Implement GPU mini-batch training so many samples run per launch and GPU utilization increases
+- [ ] Compare mini-batch averaged atomic updates against sequential updates for accuracy/regression risk
 - [ ] Verify ball-interaction (gravity now enabled) improves accuracy further
 - [ ] Position-aware routing validation: does context position 0 vs 2 produce meaningfully different nail offsets after training?
 - [ ] Extend to multi-token generation (loop prediction)

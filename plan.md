@@ -20,18 +20,25 @@
 - [x] Diamond shape fixed in README (`model-insight.md`) and PPT (`PRM-Design.pptx`)
 - [x] VizServer HTTP loop fix: `WaitForClientAsync` handles favicon → WebSocket connects reliably
 - [x] Coordinate fix: browser uses `grid.Config.MaxWidth` (post-scale) matching C# physics
+- [x] Fair causal context training: PRM now receives NN-comparable multi-token next-token samples, not fixed 3-token windows
+- [x] OpenCL GPU diagnostics and training: ILGPU backend with CPU/GPU parity checks, persistent GPU session, grouped per-ball sample kernel, mini-batch GPU training, and `train --gpu` / `autooptimize --gpu`
 - [x] All artifacts pushed to `github.com/sppfizer/thinker`
 
 ---
 
 ## 🔲 TODO — Next Session
 
-### 🔴 Critical — Learning performance broken
+### 🔴 Critical — GPU throughput and learning quality
 
-- [ ] **Re-run `autooptimize` on tiny corpus** after IDF changes
-  - Before fix: 33% val. After flat-voting + idf=1f in deflection: stuck at 1.9% train.
-  - Optimizer needs fresh sweep with current settings to find new good params.
-  - Command: `cd src/PRM/PRM.App && dotnet run -- autooptimize --corpus tiny_corpus.txt`
+- [x] **Implement GPU mini-batch training**
+  - Samples are packed into one OpenCL launch with one workgroup per sample.
+  - Offset updates use averaged atomic deltas and a projection pass to avoid unsafe direct write races.
+  - CLI: `dotnet run --project src/PRM/PRM.App -- train --gpu --batch 32`
+
+- [ ] **Re-run fair-context `autooptimize --gpu` with mini-batches**
+  - Old 3-token-window best is invalid for NN comparison.
+  - The current fair-context baseline is lower but comparable.
+  - Use: `dotnet run --project src/PRM/PRM.App -- autooptimize 50 0.60 --gpu`
 
 - [x] **Large corpus (209 tokens) overfitting reduced** — retry/contact/inertia sweep improved val to 22.2%
   - The corpus is still small, but the new training loop changes moved the benchmark off the 0% plateau.
@@ -55,8 +62,7 @@
 ### 🟢 Model improvements — ideas to explore
 
 - [x] **IDF in deflection revisited**: tested flat vs sqrt vs inverse-mass on the current corpus
-- [ ] **Ball interaction (gravity)**: re-enable `GravityG > 0` in optimizer sweep — currently 0.0
-- [ ] **Collision radius**: re-enable `CollisionRadius > 0` — balls pushing each other could help routing
+- [x] **Ball interaction (gravity/collision)**: supported by the GPU training subset
 - [ ] **Specialist diamonds**: train 2–3 role configs (Analyst, Generator, Synthesizer) on same corpus and compare
 - [ ] **Seq-to-seq inference**: chain predictions (output ball → next input) to generate multi-token completions
 
@@ -65,6 +71,7 @@
 - [x] Update `model-insight.md` section on IDF (describe the voting vs deflection split)
 - [x] Add benchmark table: tiny corpus accuracy history (was 33%, current state after IDF fix)
 - [x] Update `thinking-process.md` with IDF bug discovery and visualizer work
+- [x] Document GPU mini-batch training insight and current bottlenecks
 
 ---
 

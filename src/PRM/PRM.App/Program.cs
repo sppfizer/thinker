@@ -166,6 +166,7 @@ switch (mode)
         int epochs = smoke ? 1 : trainOptions.Epochs ?? optimizerParams?.TrainEpochs ?? 1;
         float lr = trainOptions.LearningRate ?? optimizerParams?.LR ?? 0.08f;
         float decay = trainOptions.Decay ?? 0.97f;
+        int gpuBatchSize = Math.Clamp(trainOptions.GpuBatchSize ?? 16, 1, 256);
         bool usingOptimizerSchedule = !smoke && optimizerParams is not null && !trainOptions.HasExplicitSchedule;
         int trainPasses = usingOptimizerSchedule ? Math.Max(1, optimizerParams!.TrainPasses) : 1;
         int tuneEpochs = usingOptimizerSchedule ? Math.Max(0, optimizerParams!.TuneEpochs) : 0;
@@ -182,7 +183,7 @@ switch (mode)
         {
             float passLR = lr * MathF.Pow(0.85f, pass);
             float curLR = passLR;
-            var gpuTrainer = new GpuTrainingMode(router)
+            var gpuTrainer = new GpuTrainingMode(router, new FlatPrmGpuTrainingOptions(MiniBatchSize: gpuBatchSize))
             {
                 LearningRate = passLR,
                 EpochCount = epochs,
@@ -198,7 +199,7 @@ switch (mode)
 
         if (tuneEpochs > 0 && !smoke)
         {
-            var gpuTuner = new GpuTrainingMode(router)
+            var gpuTuner = new GpuTrainingMode(router, new FlatPrmGpuTrainingOptions(MiniBatchSize: gpuBatchSize))
             {
                 LearningRate = tuneLR,
                 EpochCount = tuneEpochs
@@ -689,6 +690,7 @@ static TrainOptions ParseTrainOptions(string[] modeArgs)
 {
     var positional = new List<string>();
     int warmupIterations = 0;
+    int? gpuBatchSize = null;
     bool noOptimizer = false;
 
     for (int i = 1; i < modeArgs.Length; i++)
@@ -716,6 +718,17 @@ static TrainOptions ParseTrainOptions(string[] modeArgs)
                 break;
             case "--gpu":
                 break;
+            case "--batch":
+                if (i + 1 < modeArgs.Length && int.TryParse(modeArgs[i + 1], out var parsedBatch))
+                {
+                    gpuBatchSize = parsedBatch;
+                    i++;
+                }
+                else
+                {
+                    Console.WriteLine("Ignoring --batch without an integer value.");
+                }
+                break;
             default:
                 Console.WriteLine($"Ignoring unknown train option: {arg}");
                 break;
@@ -732,7 +745,7 @@ static TrainOptions ParseTrainOptions(string[] modeArgs)
         ? parsedDecay
         : null;
 
-    return new TrainOptions(epochs, lr, decay, Math.Clamp(warmupIterations, 0, 10), noOptimizer, positional.Count > 0);
+    return new TrainOptions(epochs, lr, decay, Math.Clamp(warmupIterations, 0, 10), noOptimizer, positional.Count > 0, gpuBatchSize);
 }
 
 static string LoadCorpus(string? filename = null)
@@ -914,7 +927,8 @@ public sealed record TrainOptions(
     float? Decay,
     int WarmupIterations,
     bool NoOptimizer,
-    bool HasExplicitSchedule)
+    bool HasExplicitSchedule,
+    int? GpuBatchSize)
 {
-    public static TrainOptions Default { get; } = new(null, null, null, 0, false, false);
+    public static TrainOptions Default { get; } = new(null, null, null, 0, false, false, null);
 }

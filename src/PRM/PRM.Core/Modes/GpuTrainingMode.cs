@@ -85,16 +85,17 @@ public sealed class GpuTrainingMode
     {
         var results = new List<TrainStepResult>();
         var misses = new List<ReplaySample>();
+        int batchSize = Math.Max(1, _options.MiniBatchSize);
+        var pending = new List<(int[] inputIds, int targetId)>(batchSize);
 
         foreach (var (inputIds, targetId) in dataset)
         {
-            var (predicted, isCorrect, role, conf, message) = TrainGpu(inputIds, targetId, learningRate, sessions);
-            LastExecutionMessage = message;
-            int resultIndex = results.Count;
-            results.Add(new TrainStepResult(predicted, targetId, isCorrect, role, conf, Retries: 0, Misses: isCorrect ? 0 : 1));
-            if (!isCorrect)
-                misses.Add(new ReplaySample(inputIds, targetId, resultIndex));
+            pending.Add((inputIds, targetId));
+            if (pending.Count >= batchSize)
+                FlushPending();
         }
+
+        FlushPending();
 
         ReplayMissSamples(misses, results, learningRate, sessions);
 
@@ -102,6 +103,26 @@ public sealed class GpuTrainingMode
             onStep?.Invoke(epoch, result);
 
         return BuildMetrics(results);
+
+        void FlushPending()
+        {
+            if (pending.Count == 0)
+                return;
+
+            var trained = TrainGpuBatch(pending, learningRate, sessions);
+            for (int i = 0; i < trained.Count; i++)
+            {
+                var sample = pending[i];
+                var (predicted, isCorrect, role, conf, message) = trained[i];
+                LastExecutionMessage = message;
+                int resultIndex = results.Count;
+                results.Add(new TrainStepResult(predicted, sample.targetId, isCorrect, role, conf, Retries: 0, Misses: isCorrect ? 0 : 1));
+                if (!isCorrect)
+                    misses.Add(new ReplaySample(sample.inputIds, sample.targetId, resultIndex));
+            }
+
+            pending.Clear();
+        }
     }
 
     private (int predicted, bool correct, string role, float confidence, string message) TrainGpu(
@@ -132,6 +153,54 @@ public sealed class GpuTrainingMode
         return (bestPred, bestPred == targetTokenId, winner?.Role ?? "?", bestConf, message);
     }
 
+    private List<(int predicted, bool correct, string role, float confidence, string message)> TrainGpuBatch(
+        IReadOnlyList<(int[] inputIds, int targetId)> samples,
+        float learningRate,
+        IReadOnlyDictionary<DiamondGrid, FlatPrmGpuTrainingSession> sessions)
+    {
+        var bestPredictions = Enumerable.Repeat(-1, samples.Count).ToArray();
+        var bestConfidences = Enumerable.Repeat(-1f, samples.Count).ToArray();
+        var bestRoles = Enumerable.Repeat("?", samples.Count).ToArray();
+        string message = "";
+
+        foreach (var spec in _router.Specialists)
+        {
+            FlatPrmGpuTrainingSampleResult[] specResults;
+            if (sessions.TryGetValue(spec, out var session))
+            {
+                specResults = session.TrainBatch(samples, learningRate);
+            }
+            else
+            {
+                specResults = new FlatPrmGpuTrainingSampleResult[samples.Count];
+                for (int i = 0; i < samples.Count; i++)
+                    specResults[i] = FlatPrmGpuTrainingRunner.TrainSample(spec, samples[i].inputIds, samples[i].targetId, learningRate, _options);
+            }
+
+            for (int i = 0; i < specResults.Length; i++)
+            {
+                var result = specResults[i];
+                message = result.Run.Message;
+                if (result.Confidence > bestConfidences[i])
+                {
+                    bestConfidences[i] = result.Confidence;
+                    bestPredictions[i] = result.Predicted;
+                    bestRoles[i] = spec.Role;
+                }
+            }
+        }
+
+        var trained = new List<(int predicted, bool correct, string role, float confidence, string message)>(samples.Count);
+        for (int i = 0; i < samples.Count; i++)
+        {
+            int targetId = samples[i].targetId;
+            int predicted = bestPredictions[i];
+            trained.Add((predicted, predicted == targetId, bestRoles[i], bestConfidences[i], message));
+        }
+
+        return trained;
+    }
+
     private void ReplayMissSamples(
         List<ReplaySample> misses,
         List<TrainStepResult> results,
@@ -149,30 +218,37 @@ public sealed class GpuTrainingMode
         for (int pass = 0; pass < ReplayCurriculum.MaxReplayPasses && currentMisses.Count > 0 && remainingBudget > 0 && replayLearningRate > 0f; pass++)
         {
             var stillMissing = new List<ReplaySample>();
-            foreach (var sample in currentMisses)
+            int batchSize = Math.Max(1, _options.MiniBatchSize);
+            for (int start = 0; start < currentMisses.Count && remainingBudget > 0; start += batchSize)
             {
-                if (remainingBudget <= 0)
+                int count = Math.Min(Math.Min(batchSize, currentMisses.Count - start), remainingBudget);
+                var replayBatch = currentMisses
+                    .Skip(start)
+                    .Take(count)
+                    .Select(sample => (sample.InputIds, sample.TargetId))
+                    .ToList();
+                var trained = TrainGpuBatch(replayBatch, replayLearningRate, sessions);
+
+                for (int i = 0; i < trained.Count; i++)
                 {
-                    stillMissing.Add(sample);
-                    continue;
+                    var sample = currentMisses[start + i];
+                    var (predicted, isCorrect, role, conf, message) = trained[i];
+                    LastExecutionMessage = message;
+                    remainingBudget--;
+
+                    var previous = results[sample.ResultIndex];
+                    results[sample.ResultIndex] = new TrainStepResult(
+                        predicted,
+                        sample.TargetId,
+                        isCorrect,
+                        role,
+                        conf,
+                        previous.Retries + 1,
+                        isCorrect ? 0 : 1);
+
+                    if (!isCorrect)
+                        stillMissing.Add(sample);
                 }
-
-                var (predicted, isCorrect, role, conf, message) = TrainGpu(sample.InputIds, sample.TargetId, replayLearningRate, sessions);
-                LastExecutionMessage = message;
-                remainingBudget--;
-
-                var previous = results[sample.ResultIndex];
-                results[sample.ResultIndex] = new TrainStepResult(
-                    predicted,
-                    sample.TargetId,
-                    isCorrect,
-                    role,
-                    conf,
-                    previous.Retries + 1,
-                    isCorrect ? 0 : 1);
-
-                if (!isCorrect)
-                    stillMissing.Add(sample);
             }
 
             currentMisses = stillMissing;

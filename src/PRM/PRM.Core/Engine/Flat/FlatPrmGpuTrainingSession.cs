@@ -15,6 +15,7 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
     private readonly FlatPrmRowGeometry _geometry;
     private readonly FlatPrmGpuRunResult _run;
     private readonly int _maxBalls;
+    private readonly int _batchCapacity;
     private readonly int _tokenRows;
     private readonly int _tokenColumns;
     private readonly int _tokenDepth;
@@ -23,14 +24,26 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
     private readonly int _sharedDepth;
     private readonly FlatPrmGpuBallState[] _ballArray;
     private readonly int[] _contactArray;
+    private readonly FlatPrmGpuBallState[] _batchBallArray;
+    private readonly int[] _batchContactArray;
+    private readonly int[] _batchBallCounts;
+    private readonly int[] _batchCorrectFlags;
+    private readonly float[] _batchTargetCentres;
     private readonly FlatPrmGpuNailProperties[] _nailPropertiesArray;
     private readonly MemoryBuffer1D<FlatPrmGpuBallState, Stride1D.Dense> _ballsBuffer;
+    private readonly MemoryBuffer1D<FlatPrmGpuBallState, Stride1D.Dense> _batchBallsBuffer;
+    private readonly MemoryBuffer1D<int, Stride1D.Dense> _batchBallCountsBuffer;
+    private readonly MemoryBuffer1D<int, Stride1D.Dense> _batchCorrectFlagsBuffer;
+    private readonly MemoryBuffer1D<float, Stride1D.Dense> _batchTargetCentresBuffer;
     private readonly MemoryBuffer1D<float, Stride1D.Dense> _tokenOffsetXBuffer;
     private readonly MemoryBuffer1D<float, Stride1D.Dense> _tokenOffsetYBuffer;
     private readonly MemoryBuffer1D<float, Stride1D.Dense> _sharedOffsetXBuffer;
     private readonly MemoryBuffer1D<float, Stride1D.Dense> _sharedOffsetYBuffer;
     private readonly MemoryBuffer1D<FlatPrmGpuNailProperties, Stride1D.Dense> _nailPropertiesBuffer;
     private readonly MemoryBuffer1D<int, Stride1D.Dense> _contactsBuffer;
+    private readonly MemoryBuffer1D<int, Stride1D.Dense> _batchContactsBuffer;
+    private readonly MemoryBuffer1D<float, Stride1D.Dense> _nailResistanceDeltasBuffer;
+    private readonly MemoryBuffer1D<float, Stride1D.Dense> _nailDensityDeltasBuffer;
     private readonly MemoryBuffer1D<FlatPrmGpuRowGeometry, Stride1D.Dense> _rowGeometryBuffer;
     private readonly Action<
         Index1D,
@@ -87,10 +100,45 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         int,
         int,
         float,
+        ArrayView1D<int, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>,
+        ArrayView1D<int, Stride1D.Dense>,
+        ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense>> _batchKernel;
+    private readonly Action<
+        Index1D,
+        FlatPrmGpuKernelConfig,
+        int,
+        int,
+        float,
         float,
         ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
         ArrayView1D<int, Stride1D.Dense>,
         ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>> _postAdjustKernel;
+    private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>> _projectOffsetKernel;
+    private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>> _clearFloatKernel;
+    private readonly Action<
+        Index1D,
+        FlatPrmGpuKernelConfig,
+        int,
+        int,
+        float,
+        ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
+        ArrayView1D<int, Stride1D.Dense>,
+        ArrayView1D<int, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>> _batchPostAdjustKernel;
+    private readonly Action<
+        Index1D,
+        ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>> _applyNailDeltasKernel;
     private bool _offsetsDirty;
     private bool _nailsDirty;
 
@@ -106,8 +154,14 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         _config = FlatPrmKernelConfig.FromConfig(grid.Config, grid.Vocab.Length, _geometry.MaxColumns);
         _gpuConfig = new FlatPrmGpuKernelConfig(_config, 0, _config.TotalRows);
         _maxBalls = Math.Max(grid.Config.InputWindowSize + 1, 1);
+        _batchCapacity = Math.Clamp(options.MiniBatchSize, 1, 256);
         _ballArray = new FlatPrmGpuBallState[_maxBalls];
         _contactArray = new int[_config.TotalRows * _maxBalls];
+        _batchBallArray = new FlatPrmGpuBallState[_batchCapacity * _maxBalls];
+        _batchContactArray = new int[_config.TotalRows * _batchBallArray.Length];
+        _batchBallCounts = new int[_batchCapacity];
+        _batchCorrectFlags = new int[_batchCapacity];
+        _batchTargetCentres = new float[_batchCapacity];
         _nailPropertiesArray = new FlatPrmGpuNailProperties[_config.TotalRows * _config.MaxColumns];
 
         var tokenOffX = grid.Simulator.GetTokenOffX();
@@ -139,15 +193,22 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
             UsedGpu: deviceInfo.IsGpu,
             UsedCpuFallback: false,
             Device: deviceInfo,
-            Message: $"Ran persistent flat GPU training on OpenCL device '{deviceInfo.Name}' (gpu={deviceInfo.IsGpu}).");
+            Message: $"Ran mini-batch flat GPU training on OpenCL device '{deviceInfo.Name}' (gpu={deviceInfo.IsGpu}, batch={_batchCapacity}).");
 
         _ballsBuffer = _accelerator.Allocate1D<FlatPrmGpuBallState>(_ballArray.Length);
+        _batchBallsBuffer = _accelerator.Allocate1D<FlatPrmGpuBallState>(_batchBallArray.Length);
+        _batchBallCountsBuffer = _accelerator.Allocate1D<int>(_batchBallCounts.Length);
+        _batchCorrectFlagsBuffer = _accelerator.Allocate1D<int>(_batchCorrectFlags.Length);
+        _batchTargetCentresBuffer = _accelerator.Allocate1D<float>(_batchTargetCentres.Length);
         _tokenOffsetXBuffer = _accelerator.Allocate1D<float>(_tokenRows * _tokenColumns * _tokenDepth);
         _tokenOffsetYBuffer = _accelerator.Allocate1D<float>(_tokenRows * _tokenColumns * _tokenDepth);
         _sharedOffsetXBuffer = _accelerator.Allocate1D<float>(_sharedRows * _sharedColumns * _sharedDepth);
         _sharedOffsetYBuffer = _accelerator.Allocate1D<float>(_sharedRows * _sharedColumns * _sharedDepth);
         _nailPropertiesBuffer = _accelerator.Allocate1D<FlatPrmGpuNailProperties>(_nailPropertiesArray.Length);
         _contactsBuffer = _accelerator.Allocate1D<int>(_contactArray.Length);
+        _batchContactsBuffer = _accelerator.Allocate1D<int>(_batchContactArray.Length);
+        _nailResistanceDeltasBuffer = _accelerator.Allocate1D<float>(_nailPropertiesArray.Length);
+        _nailDensityDeltasBuffer = _accelerator.Allocate1D<float>(_nailPropertiesArray.Length);
         _rowGeometryBuffer = _accelerator.Allocate1D<FlatPrmGpuRowGeometry>(_geometry.TotalRows);
 
         _tokenOffsetXBuffer.CopyFromCPU(FlatPrmArrayPacking.Flatten(tokenOffX));
@@ -228,6 +289,57 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
             ArrayView1D<int, Stride1D.Dense>,
             ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>>(
                 FlatPrmGpuKernels.ApplyPostTrainingNailAdjustment);
+
+        _batchKernel = _accelerator.LoadImplicitlyGroupedStreamKernel<
+            Index1D,
+            FlatPrmGpuKernelConfig,
+            int,
+            int,
+            float,
+            ArrayView1D<int, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>,
+            ArrayView1D<int, Stride1D.Dense>,
+            ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense>>(
+                FlatPrmGpuKernels.RunTrainingBatchRowsGrouped,
+                _maxBalls);
+
+        _projectOffsetKernel = _accelerator.LoadAutoGroupedStreamKernel<
+            Index1D,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>>(
+                FlatPrmGpuKernels.ProjectOffsetPair);
+
+        _clearFloatKernel = _accelerator.LoadAutoGroupedStreamKernel<
+            Index1D,
+            ArrayView1D<float, Stride1D.Dense>>(
+                FlatPrmGpuKernels.ClearFloatBuffer);
+
+        _batchPostAdjustKernel = _accelerator.LoadAutoGroupedStreamKernel<
+            Index1D,
+            FlatPrmGpuKernelConfig,
+            int,
+            int,
+            float,
+            ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
+            ArrayView1D<int, Stride1D.Dense>,
+            ArrayView1D<int, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>>(
+                FlatPrmGpuKernels.ApplyPostTrainingNailAdjustmentBatch);
+
+        _applyNailDeltasKernel = _accelerator.LoadAutoGroupedStreamKernel<
+            Index1D,
+            ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>>(
+                FlatPrmGpuKernels.ApplyNailPropertyDeltas);
     }
 
     public FlatPrmGpuTrainingSampleResult TrainSample(
@@ -283,6 +395,124 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         _nailsDirty = true;
 
         return new FlatPrmGpuTrainingSampleResult(predicted, correct, confidence, _run);
+    }
+
+    public FlatPrmGpuTrainingSampleResult[] TrainBatch(
+        IReadOnlyList<(int[] inputTokenIds, int targetTokenId)> samples,
+        float learningRate)
+    {
+        if (samples.Count == 0)
+            return [];
+        if (samples.Count == 1 || _batchCapacity <= 1)
+            return [TrainSample(samples[0].inputTokenIds, samples[0].targetTokenId, learningRate)];
+        if (samples.Count > _batchCapacity)
+            throw new InvalidOperationException($"GPU mini-batch has {samples.Count} samples but session capacity is {_batchCapacity}.");
+
+        int batchCount = samples.Count;
+        var allBallsBySample = new List<Ball>[batchCount];
+        Array.Fill(_batchBallArray, new FlatPrmGpuBallState(0f, 0f, 0f, 0f, 0, 0, active: 0));
+        Array.Fill(_batchContactArray, -1);
+        Array.Clear(_batchBallCounts);
+        Array.Clear(_batchCorrectFlags);
+        Array.Clear(_batchTargetCentres);
+
+        for (int sampleIndex = 0; sampleIndex < batchCount; sampleIndex++)
+        {
+            var (inputTokenIds, targetTokenId) = samples[sampleIndex];
+            var allBalls = _grid.CreateBallsForFlatTraining(inputTokenIds);
+            if (allBalls.Count > _maxBalls)
+                throw new InvalidOperationException($"GPU mini-batch sample has {allBalls.Count} balls but session capacity is {_maxBalls}.");
+
+            allBallsBySample[sampleIndex] = allBalls;
+            _batchBallCounts[sampleIndex] = allBalls.Count;
+            _batchTargetCentres[sampleIndex] = _grid.SlotCentreForFlatTraining(targetTokenId);
+            int baseIndex = sampleIndex * _maxBalls;
+            for (int ballIndex = 0; ballIndex < allBalls.Count; ballIndex++)
+            {
+                var ball = allBalls[ballIndex];
+                _batchBallArray[baseIndex + ballIndex] = new FlatPrmGpuBallState(
+                    ball.Position,
+                    ball.Velocity,
+                    ball.Mass,
+                    ball.RelevanceWeight,
+                    ball.TokenId,
+                    ball.ContextPosition,
+                    active: ball.Active ? 1 : 0,
+                    stuck: ball.Stuck ? 1 : 0);
+            }
+        }
+
+        _batchBallsBuffer.CopyFromCPU(_batchBallArray);
+        _batchContactsBuffer.CopyFromCPU(_batchContactArray);
+        _batchBallCountsBuffer.CopyFromCPU(_batchBallCounts);
+        _batchTargetCentresBuffer.CopyFromCPU(_batchTargetCentres);
+
+        _batchKernel(
+            batchCount * _maxBalls,
+            _gpuConfig,
+            batchCount,
+            _maxBalls,
+            learningRate,
+            _batchBallCountsBuffer.View,
+            _batchTargetCentresBuffer.View,
+            _batchBallsBuffer.View,
+            _tokenOffsetXBuffer.View,
+            _tokenOffsetYBuffer.View,
+            _sharedOffsetXBuffer.View,
+            _sharedOffsetYBuffer.View,
+            _nailPropertiesBuffer.View,
+            _batchContactsBuffer.View,
+            _rowGeometryBuffer.View);
+
+        _projectOffsetKernel(_tokenRows * _tokenColumns * _tokenDepth, _tokenOffsetXBuffer.View, _tokenOffsetYBuffer.View);
+        _projectOffsetKernel(_sharedRows * _sharedColumns * _sharedDepth, _sharedOffsetXBuffer.View, _sharedOffsetYBuffer.View);
+        _accelerator.Synchronize();
+
+        _batchBallsBuffer.CopyToCPU(_batchBallArray);
+        _batchContactsBuffer.CopyToCPU(_batchContactArray);
+        _offsetsDirty = true;
+
+        var results = new FlatPrmGpuTrainingSampleResult[batchCount];
+        int contactStride = _batchCapacity * _maxBalls;
+        for (int sampleIndex = 0; sampleIndex < batchCount; sampleIndex++)
+        {
+            int baseIndex = sampleIndex * _maxBalls;
+            var allBalls = allBallsBySample[sampleIndex];
+            var survivors = BuildSurvivorBalls(
+                _batchBallArray.AsSpan(baseIndex, allBalls.Count),
+                _batchContactArray,
+                contactStride,
+                _config.TotalRows,
+                baseIndex);
+            var (predicted, confidence) = _grid.ScoreFlatTraining(survivors, allBalls);
+            bool correct = predicted == samples[sampleIndex].targetTokenId;
+            _batchCorrectFlags[sampleIndex] = correct ? 1 : 0;
+            results[sampleIndex] = new FlatPrmGpuTrainingSampleResult(predicted, correct, confidence, _run);
+        }
+
+        _batchCorrectFlagsBuffer.CopyFromCPU(_batchCorrectFlags);
+        _clearFloatKernel(_nailPropertiesArray.Length, _nailResistanceDeltasBuffer.View);
+        _clearFloatKernel(_nailPropertiesArray.Length, _nailDensityDeltasBuffer.View);
+        _batchPostAdjustKernel(
+            batchCount,
+            _gpuConfig,
+            batchCount,
+            _maxBalls,
+            learningRate,
+            _batchBallsBuffer.View,
+            _batchContactsBuffer.View,
+            _batchCorrectFlagsBuffer.View,
+            _batchTargetCentresBuffer.View,
+            _nailResistanceDeltasBuffer.View,
+            _nailDensityDeltasBuffer.View);
+        _applyNailDeltasKernel(
+            _nailPropertiesArray.Length,
+            _nailPropertiesBuffer.View,
+            _nailResistanceDeltasBuffer.View,
+            _nailDensityDeltasBuffer.View);
+        _nailsDirty = true;
+
+        return results;
     }
 
     public void FlushOffsetsToGrid()
@@ -343,10 +573,17 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         _rowGeometryBuffer.Dispose();
         _contactsBuffer.Dispose();
         _nailPropertiesBuffer.Dispose();
+        _nailDensityDeltasBuffer.Dispose();
+        _nailResistanceDeltasBuffer.Dispose();
+        _batchContactsBuffer.Dispose();
         _sharedOffsetYBuffer.Dispose();
         _sharedOffsetXBuffer.Dispose();
         _tokenOffsetYBuffer.Dispose();
         _tokenOffsetXBuffer.Dispose();
+        _batchTargetCentresBuffer.Dispose();
+        _batchCorrectFlagsBuffer.Dispose();
+        _batchBallCountsBuffer.Dispose();
+        _batchBallsBuffer.Dispose();
         _ballsBuffer.Dispose();
         _accelerator.Dispose();
         _context.Dispose();
@@ -385,7 +622,8 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         ReadOnlySpan<FlatPrmGpuBallState> states,
         ReadOnlySpan<int> contactColumns,
         int contactStride,
-        int totalRows)
+        int totalRows,
+        int contactBase = 0)
     {
         var survivors = new List<Ball>();
         for (int i = 0; i < states.Length; i++)
@@ -407,7 +645,7 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
 
             for (int row = 0; row < totalRows; row++)
             {
-                int col = contactColumns[row * contactStride + i];
+                int col = contactColumns[row * contactStride + contactBase + i];
                 if (col >= 0)
                 {
                     int nailId = row * 10_000 + col;
