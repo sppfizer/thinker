@@ -11,6 +11,9 @@ public class DiamondGrid
 {
     public DiamondConfig Config { get; }
     public string        Role   => Config.RoleName;
+    internal VocabToken[] Vocab => _vocab;
+    internal Nail[,] Nails => _nails;
+    internal BallSimulator Simulator => _simulator;
 
     private readonly Nail[,]       _nails;
     private readonly BallSimulator _simulator;
@@ -42,6 +45,21 @@ public class DiamondGrid
                 DeflectionAlpha  = config.DeflectionAlpha,
                 DeflectionIdfPower = config.DeflectionIdfPower,
                 DeflectionAlphaY = config.DeflectionAlphaY,
+                SharedOffsetBlend = config.SharedOffsetBlend,
+                ScoreDistanceSigma = config.ScoreDistanceSigma,
+                ScoreProbeWeight = config.ScoreProbeWeight,
+                PredictionProbeTrainingWeight = config.PredictionProbeTrainingWeight,
+                ContextRelevanceDecay = config.ContextRelevanceDecay,
+                ContextReinforcementStrength = config.ContextReinforcementStrength,
+                DownstreamNailInfluence = config.DownstreamNailInfluence,
+                DownstreamNailInfluenceRows = config.DownstreamNailInfluenceRows,
+                DownstreamNailInfluenceRadius = config.DownstreamNailInfluenceRadius,
+                DownstreamNailInfluenceDecay = config.DownstreamNailInfluenceDecay,
+                DownstreamNailTargetDirectionality = config.DownstreamNailTargetDirectionality,
+                ContextSummaryBallCount = config.ContextSummaryBallCount,
+                ContextSummaryRow = config.ContextSummaryRow,
+                ContextSummaryMassScale = config.ContextSummaryMassScale,
+                ContextSummaryScoreWeight = config.ContextSummaryScoreWeight,
                 GravityG         = config.GravityG,
                 ProximityBand    = config.ProximityBand,
                 CollisionRadius  = config.CollisionRadius,
@@ -106,6 +124,21 @@ public class DiamondGrid
         return (pred, pred == targetTokenId, conf);
     }
 
+    internal List<Ball> CreateBallsForFlatTraining(int[] tokenIds) => CreateBalls(tokenIds);
+
+    internal (int tokenId, float confidence) ScoreFlatTraining(List<Ball> survivors, List<Ball> all) =>
+        Score(survivors, all);
+
+    internal float SlotCentreForFlatTraining(int tokenId) => SlotCentre(tokenId);
+
+    internal void ApplyFlatPostTrainingAdjustment(List<Ball> survivors, float targetCentre, float learningRate, bool correct)
+    {
+        if (correct)
+            _simulator.ReinforceContacts(survivors, targetCentre, learningRate);
+        else
+            _simulator.SoftenContacts(survivors, learningRate);
+    }
+
     // ── Checkpointing ─────────────────────────────────────────────────────────
 
     public void SaveNails(string path)
@@ -139,6 +172,22 @@ public class DiamondGrid
         for (int c = 0; c < offY.GetLength(1); c++)
         for (int t = 0; t < offY.GetLength(2); t++)
             bw.Write(offY[r, c, t]);
+
+        // Shared cross-position offsets (X/Y). Kept after the legacy token offsets so
+        // older checkpoint readers can still consume the prefix they understand.
+        var sharedX = _simulator.GetSharedOffX();
+        bw.Write(sharedX.GetLength(0)); bw.Write(sharedX.GetLength(1)); bw.Write(sharedX.GetLength(2));
+        for (int r = 0; r < sharedX.GetLength(0); r++)
+        for (int c = 0; c < sharedX.GetLength(1); c++)
+        for (int t = 0; t < sharedX.GetLength(2); t++)
+            bw.Write(sharedX[r, c, t]);
+
+        var sharedY = _simulator.GetSharedOffY();
+        bw.Write(sharedY.GetLength(0)); bw.Write(sharedY.GetLength(1)); bw.Write(sharedY.GetLength(2));
+        for (int r = 0; r < sharedY.GetLength(0); r++)
+        for (int c = 0; c < sharedY.GetLength(1); c++)
+        for (int t = 0; t < sharedY.GetLength(2); t++)
+            bw.Write(sharedY[r, c, t]);
     }
 
     public void LoadNails(string path)
@@ -174,6 +223,23 @@ public class DiamondGrid
                 loadedY[r, c, t] = br.ReadSingle();
 
             _simulator.SetTokenOffsets(loadedX, loadedY);
+
+            // Newer checkpoints append shared cross-position offsets. Older files end here.
+            int sxr = br.ReadInt32(), sxc = br.ReadInt32(), sxt = br.ReadInt32();
+            var sharedX = new float[sxr, sxc, sxt];
+            for (int r = 0; r < sxr; r++)
+            for (int c = 0; c < sxc; c++)
+            for (int t = 0; t < sxt; t++)
+                sharedX[r, c, t] = br.ReadSingle();
+
+            int syr = br.ReadInt32(), syc = br.ReadInt32(), syt = br.ReadInt32();
+            var sharedY = new float[syr, syc, syt];
+            for (int r = 0; r < syr; r++)
+            for (int c = 0; c < syc; c++)
+            for (int t = 0; t < syt; t++)
+                sharedY[r, c, t] = br.ReadSingle();
+
+            _simulator.SetSharedOffsets(sharedX, sharedY);
         }
         catch (EndOfStreamException) { /* old/partial checkpoint — keep defaults */ }
     }
@@ -185,13 +251,14 @@ public class DiamondGrid
         var balls = new List<Ball>(tokenIds.Length + 1);
         float gridCentre = Config.MaxWidth / 2f;
         float spacing    = Config.EntryWidth / Math.Max(tokenIds.Length, 1);
+        float[] relevance = ContextRelevanceWeights(tokenIds);
 
         for (int i = 0; i < tokenIds.Length; i++)
         {
             int id = tokenIds[i];
             if (id < 0 || id >= _vocab.Length) continue;
             float x = gridCentre - Config.EntryWidth / 2f + spacing * i + spacing / 2f;
-            balls.Add(new Ball(id, x, _vocab[id].Mass, contextPosition: i));
+            balls.Add(new Ball(id, x, _vocab[id].Mass, contextPosition: i, relevanceWeight: relevance[i]));
         }
 
         // Prediction slot ball (near-zero mass, position=-1 → uses last window slot)
@@ -217,30 +284,83 @@ public class DiamondGrid
 
         foreach (var ball in survivors)
         {
-            if (ball.TokenId < 0) continue;   // skip the neutral probe ball
+            float weight = ScoreWeight(ball);
+            if (weight <= 0f) continue;
 
             // Map grid coord → slot coord
             float norm = (ball.Position - gridLeft) / gridSpan * totalSlotSpan;
 
-            // Flat weight: 1 vote per ball regardless of rarity.
-            // IDF belongs in the training nudge (rare tokens get stronger nail updates),
-            // not here — otherwise rare balls dominate every prediction regardless of routing.
-            const float weight = 1f;
-
-            for (int t = 0; t < _vocab.Length; t++)
+            if (Config.ScoreDistanceSigma > 0f)
             {
-                if (norm >= _vocab[t].SlotLeft && norm < _vocab[t].SlotRight)
+                float sigma = Math.Max(Config.ScoreDistanceSigma, 1e-4f);
+                for (int t = 0; t < _vocab.Length; t++)
                 {
-                    scores[t] += weight;
-                    break;
+                    float centre = _vocab[t].SlotLeft + _vocab[t].SlotWidth / 2f;
+                    float dist = (norm - centre) / sigma;
+                    scores[t] += weight * MathF.Exp(-0.5f * dist * dist);
+                }
+            }
+            else
+            {
+                for (int t = 0; t < _vocab.Length; t++)
+                {
+                    if (norm >= _vocab[t].SlotLeft && norm < _vocab[t].SlotRight)
+                    {
+                        scores[t] += weight;
+                        break;
+                    }
                 }
             }
         }
 
         int winner    = Array.IndexOf(scores, scores.Max());
         float retMass = survivors.Sum(b => b.Mass);
-        float confidence = totalInput > 0 ? retMass / totalInput : 0f;
+        float confidence = totalInput > 0 ? Math.Min(retMass / totalInput, 1f) : 0f;
         return (winner, confidence);
+    }
+
+    private float[] ContextRelevanceWeights(int[] tokenIds)
+    {
+        var weights = new float[tokenIds.Length];
+        if (tokenIds.Length == 0) return weights;
+
+        float decay = Math.Clamp(Config.ContextRelevanceDecay, 0f, 1f);
+        float retention = 1f - decay;
+        float reinforcement = Math.Max(Config.ContextReinforcementStrength, 0f);
+
+        for (int i = 0; i < tokenIds.Length; i++)
+        {
+            int age = tokenIds.Length - 1 - i;
+            float weight = decay <= 0f ? 1f : MathF.Pow(retention, age);
+
+            if (decay > 0f && reinforcement > 0f)
+            {
+                int futureRepeats = 0;
+                for (int j = i + 1; j < tokenIds.Length; j++)
+                    if (tokenIds[j] == tokenIds[i]) futureRepeats++;
+
+                if (futureRepeats > 0)
+                {
+                    float restore = 1f - MathF.Exp(-reinforcement * futureRepeats);
+                    weight += (1f - weight) * restore;
+                }
+            }
+
+            weights[i] = Math.Clamp(weight, 0f, 1f);
+        }
+
+        return weights;
+    }
+
+    private float ScoreWeight(Ball ball)
+    {
+        if (ball.TokenId == -1)
+            return Math.Max(Config.ScoreProbeWeight, 0f);
+
+        if (ball.TokenId < -1)
+            return Math.Max(Config.ContextSummaryScoreWeight, 0f) * Math.Clamp(ball.RelevanceWeight, 0f, 1f);
+
+        return Math.Clamp(ball.RelevanceWeight, 0f, 1f);
     }
 
     /// <summary>

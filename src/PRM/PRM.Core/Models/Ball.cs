@@ -8,6 +8,7 @@ public class Ball
     public float Position        { get; set; }    // x-position in grid (pixels / units)
     public float Velocity        { get; set; }    // horizontal velocity
     public float Mass            { get; init; }   // pre-computed from token frequency
+    public float RelevanceWeight { get; init; } = 1f;
     public int   EntryRow        { get; init; }   // row it was dropped at (always 0)
     public bool  Active          { get; set; } = true;
     public bool  Stuck           { get; set; }
@@ -15,11 +16,12 @@ public class Ball
     public int   LastNailTIdx    { get; set; } = -1; // token routing index used
     public List<int> ContactNailIds { get; } = [];
 
-    public Ball(int tokenId, float position, float mass, int contextPosition = 0)
+    public Ball(int tokenId, float position, float mass, int contextPosition = 0, float relevanceWeight = 1f)
     {
         TokenId         = tokenId;
         Position        = position;
         Mass            = mass;
         ContextPosition = contextPosition;
+        RelevanceWeight = relevanceWeight;
     }
 }

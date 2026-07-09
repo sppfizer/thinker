@@ -1,0 +1,22 @@
+{
+  "RoleName": "Analyst",
+  "EntryWidth": 395.455,
+  "MaxWidth": 836,
+  "WideningRows": 25,
+  "NarrowingRows": 9,
+  "NailSpacing": 1.8921292,
+  "DefaultRadius": 0.5,
+  "DeflectionAlpha": 0.6,
+  "DeflectionIdfPower": 0.5,
+  "DeflectionAlphaY": 0.15,
+  "SharedOffsetBlend": 0.35,
+  "ScoreDistanceSigma": 0,
+  "ScoreProbeWeight": 0,
+  "GravityG": 0.01,
+  "ProximityBand": 8,
+  "CollisionRadius": 0.5,
+  "DeltaTime": 0.1,
+  "InputWindowSize": 3,
+  "TotalRows": 34,
+  "DefaultDiameter": 0.5
+}

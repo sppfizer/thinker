@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using PRM.Core.Engine;
+using PRM.Core.Engine.Flat;
 using PRM.Core.Models;
 using PRM.Core.Modes;
 using PRM.Core.Viz;
@@ -13,6 +14,15 @@ Console.WriteLine("╔═══════════════════�
 Console.WriteLine("║  PRM — Physical Routing Model  v0.1      ║");
 Console.WriteLine("╚══════════════════════════════════════════╝");
 Console.WriteLine();
+
+if (args.Length > 0 && (args[0].Equals("gpu", StringComparison.OrdinalIgnoreCase) ||
+                        args[0].Equals("--gpu-check", StringComparison.OrdinalIgnoreCase)))
+{
+    RunGpuDiagnostics();
+    return;
+}
+
+const int MinComparableContextWindow = 16;
 
 // ── 1. Build vocabulary from corpus ──────────────────────────────────────
 // Optional: pass --corpus <filename> as first two args to pick a different file
@@ -34,48 +44,60 @@ foreach (var t in vocab.Take(8))
     Console.WriteLine($"  [{t.Id,2}] '{t.Text,-15}' freq={t.Frequency,3}  mass={t.Mass:F3}  slotW={t.SlotWidth:F2}");
 Console.WriteLine();
 
-// ── 2. Load the active configuration ───────────────────────────────────────
-var config = LoadActiveConfig();
-var grid   = new DiamondGrid(config, vocab);
-var router = new SpecialistRouter(new[] { grid });
+// ── 2. Mode/options and corpus token ids ───────────────────────────────────
+var mode = modeArgs.Length > 0 ? modeArgs[0].ToLowerInvariant() : "train";
+if (mode == "train" && modeArgs.Any(a => a.Equals("--gpu", StringComparison.OrdinalIgnoreCase)))
+    mode = "gputrain";
+var trainOptions = mode is "train" or "gputrain" ? ParseTrainOptions(modeArgs) : TrainOptions.Default;
 
-// ── 3. Build dataset: sliding window next-token prediction ────────────────
 var tokenIds = VocabularyBuilder.Tokenise(corpus)
     .Select(t => vocab.FirstOrDefault(v => v.Text == t)?.Id ?? -1)
     .Where(id => id >= 0)
     .ToArray();
 
-var dataset = new List<(int[] input, int target)>();
-int window = 3;
-for (int i = 0; i < tokenIds.Length - window; i++)
-    dataset.Add((tokenIds[i..(i + window)], tokenIds[i + window]));
-
-// Shuffle so all sentences mix across train/val/test — without this, rare words
-// in the last sentences are never seen during training (sequential split problem).
-var shuffleRng = new Random(42);
-for (int i = dataset.Count - 1; i > 0; i--)
+AutoOptimizer.HyperParams? optimizerParams = null;
+if (!trainOptions.NoOptimizer && AutoOptimizer.TryLoadBest(vocab, out var loadedBest))
 {
-    int j = shuffleRng.Next(i + 1);
-    (dataset[i], dataset[j]) = (dataset[j], dataset[i]);
+    optimizerParams = loadedBest;
+    Console.WriteLine("Optimizer best params loaded.");
+}
+else if (mode == "train" && !trainOptions.NoOptimizer && trainOptions.WarmupIterations > 0)
+{
+    Console.WriteLine($"No optimizer best params found; running bounded warmup ({trainOptions.WarmupIterations} iteration(s)).");
+    AutoOptimizer.RunWarmup(vocab, tokenIds, trainOptions.WarmupIterations);
+    if (AutoOptimizer.TryLoadBest(vocab, out loadedBest))
+    {
+        optimizerParams = loadedBest;
+        Console.WriteLine("Optimizer warmup params loaded.");
+    }
 }
 
-// 70 / 10 / 20 split: train on fresh 70%, fine-tune on fresh 10%, validate on fresh 20%.
-// tuneSet is carved out AFTER trainSet so it is genuinely unseen during main training.
-int trainCount = Math.Max(1, (int)(dataset.Count * 0.70));
-int tuneCount  = Math.Max(1, (int)(dataset.Count * 0.10));
-int valCount   = Math.Max(1, dataset.Count - trainCount - tuneCount);
+// ── 3. Load the active configuration ───────────────────────────────────────
+var config = optimizerParams?.Config ?? LoadActiveConfig();
+config = EnsureComparableContext(config, tokenIds.Length);
+if (mode == "gputrain" && modeArgs.Any(a => a.Equals("smoke", StringComparison.OrdinalIgnoreCase)))
+{
+    config = PrepareGpuSmokeConfig(config);
+    Console.WriteLine("GPU smoke uses the supported flat subset (gravity/collisions/summary/downstream disabled for this smoke run only).");
+}
 
-var trainSet = dataset.Take(trainCount).ToList();
-var tuneSet  = dataset.Skip(trainCount).Take(tuneCount).ToList();
-var valSet   = dataset.Skip(trainCount + tuneCount).Take(valCount).ToList();
-var testSet  = valSet;   // no separate test slice with 70/10/20; testSet aliases valSet
+// ── 4. Build dataset: causal next-token prediction ─────────────────────────
+var splits = BuildDataset(tokenIds, config.InputWindowSize);
+int window = splits.Window;
+var dataset = splits.Dataset;
+var trainSet = splits.TrainSet;
+var tuneSet  = splits.TuneSet;
+var valSet   = splits.ValSet;
+var testSet  = splits.TestSet;
 
-Console.WriteLine($"Dataset: {dataset.Count} samples  (window={window})");
+var grid   = new DiamondGrid(config, vocab);
+var router = new SpecialistRouter(new[] { grid });
+
+Console.WriteLine($"Dataset: {dataset.Count} causal samples  (maxContext={window})");
 Console.WriteLine($"Split: train={trainSet.Count}, tune={tuneSet.Count}, val={valSet.Count}  (70/10/20)");
 Console.WriteLine();
 
-// ── 4. Mode selection ─────────────────────────────────────────────────────
-var mode = modeArgs.Length > 0 ? modeArgs[0].ToLower() : "train";
+// ── 5. Mode selection ─────────────────────────────────────────────────────
 Console.WriteLine($"MODE: {mode.ToUpper()}");
 Console.WriteLine(new string('─', 50));
 
@@ -84,30 +106,114 @@ switch (mode)
     // ── TRAINING ─────────────────────────────────────────────────────────
     case "train":
     {
-        // Allow: dotnet run -- train [epochs] [lr] [decay]
-        int   epochs = modeArgs.Length > 1 ? int.Parse(modeArgs[1])    : 50;
-        float lr     = modeArgs.Length > 2 ? float.Parse(modeArgs[2], System.Globalization.CultureInfo.InvariantCulture) : 0.08f;
-        float decay  = modeArgs.Length > 3 ? float.Parse(modeArgs[3], System.Globalization.CultureInfo.InvariantCulture) : 0.97f;
+        // Allow: dotnet run -- train [epochs] [lr] [decay] [--optimizer-warmup [N]] [--no-optimizer]
+        int   epochs = trainOptions.Epochs ?? optimizerParams?.TrainEpochs ?? 50;
+        float lr     = trainOptions.LearningRate ?? optimizerParams?.LR ?? 0.08f;
+        float decay  = trainOptions.Decay ?? 0.97f;
+        bool usingOptimizerSchedule = optimizerParams is not null && !trainOptions.HasExplicitSchedule;
+        int   trainPasses = usingOptimizerSchedule ? Math.Max(1, optimizerParams!.TrainPasses) : 1;
+        int   tuneEpochs  = usingOptimizerSchedule ? Math.Max(0, optimizerParams!.TuneEpochs) : 0;
+        float tuneLR      = optimizerParams?.TuneLR ?? Math.Max(0.001f, lr / 8f);
+
+        if (optimizerParams is not null)
+            Console.WriteLine($"Using optimizer config: window={config.InputWindowSize}, LR={lr:F4}, epochs={epochs}×{trainPasses}+{tuneEpochs}");
+
         if (File.Exists("prm_nails.bin")) { grid.LoadNails("prm_nails.bin"); Console.WriteLine("Nails loaded — resuming."); }
-        var trainer = new TrainingMode(router) { LearningRate = lr, EpochCount = epochs, LrDecayPerEpoch = decay };
         int   epoch    = 0;
         float bestAcc  = -1f;
-        float curLR    = lr;
-        foreach (var metrics in trainer.Run(trainSet))
+        for (int pass = 0; pass < trainPasses; pass++)
         {
-            Console.WriteLine($"Epoch {++epoch:D3}  {metrics}  LR={curLR:F5}");
-            curLR *= decay;
-            if (metrics.Accuracy > bestAcc)
+            float passLR = lr * MathF.Pow(0.85f, pass);
+            float curLR  = passLR;
+            var trainer = new TrainingMode(router) { LearningRate = passLR, EpochCount = epochs, LrDecayPerEpoch = decay };
+            foreach (var metrics in trainer.Run(trainSet))
             {
-                bestAcc = metrics.Accuracy;
-                grid.SaveNails("prm_nails_best.bin");
+                Console.WriteLine($"Epoch {++epoch:D3}  {metrics}  LR={curLR:F5}");
+                curLR *= decay;
+                if (metrics.Accuracy > bestAcc)
+                {
+                    bestAcc = metrics.Accuracy;
+                    grid.SaveNails("prm_nails_best.bin");
+                }
             }
         }
+
         // Keep best epoch as active
         if (File.Exists("prm_nails_best.bin"))
+        {
             File.Copy("prm_nails_best.bin", "prm_nails.bin", overwrite: true);
+            grid.LoadNails("prm_nails.bin");
+        }
+
+        if (tuneEpochs > 0)
+        {
+            var tuner = new TuneMode(router) { LearningRate = tuneLR, EpochCount = tuneEpochs };
+            int tuneEpoch = 0;
+            foreach (var metrics in tuner.Run(tuneSet))
+                Console.WriteLine($"Tune epoch {++tuneEpoch:D2}  {metrics}");
+            grid.SaveNails("prm_nails.bin");
+        }
+
         SaveActiveConfig(config);
         Console.WriteLine($"\nBest train acc={bestAcc:P1} → prm_nails.bin");
+        break;
+    }
+
+    // ── GPU TRAINING (supported flat subset, CPU fallback when unavailable) ──
+    case "gputrain":
+    {
+        bool smoke = modeArgs.Any(a => a.Equals("smoke", StringComparison.OrdinalIgnoreCase));
+        int epochs = smoke ? 1 : trainOptions.Epochs ?? optimizerParams?.TrainEpochs ?? 1;
+        float lr = trainOptions.LearningRate ?? optimizerParams?.LR ?? 0.08f;
+        float decay = trainOptions.Decay ?? 0.97f;
+        bool usingOptimizerSchedule = !smoke && optimizerParams is not null && !trainOptions.HasExplicitSchedule;
+        int trainPasses = usingOptimizerSchedule ? Math.Max(1, optimizerParams!.TrainPasses) : 1;
+        int tuneEpochs = usingOptimizerSchedule ? Math.Max(0, optimizerParams!.TuneEpochs) : 0;
+        float tuneLR = optimizerParams?.TuneLR ?? Math.Max(0.001f, lr / 8f);
+        var gpuTrainSet = smoke ? trainSet.Take(Math.Min(8, trainSet.Count)).ToList() : trainSet;
+
+        if (optimizerParams is not null && !smoke)
+            Console.WriteLine($"Using optimizer config: window={config.InputWindowSize}, LR={lr:F4}, epochs={epochs}×{trainPasses}+{tuneEpochs}");
+
+        if (File.Exists("prm_nails.bin")) { grid.LoadNails("prm_nails.bin"); Console.WriteLine("Nails loaded — resuming."); }
+
+        int epoch = 0;
+        for (int pass = 0; pass < trainPasses; pass++)
+        {
+            float passLR = lr * MathF.Pow(0.85f, pass);
+            float curLR = passLR;
+            var gpuTrainer = new GpuTrainingMode(router)
+            {
+                LearningRate = passLR,
+                EpochCount = epochs,
+                LrDecayPerEpoch = decay
+            };
+
+            foreach (var metrics in gpuTrainer.Run(gpuTrainSet))
+            {
+                Console.WriteLine($"GPU epoch {++epoch:D3}  {metrics}  LR={curLR:F5}  {gpuTrainer.LastExecutionMessage}");
+                curLR *= decay;
+            }
+        }
+
+        if (tuneEpochs > 0 && !smoke)
+        {
+            var gpuTuner = new GpuTrainingMode(router)
+            {
+                LearningRate = tuneLR,
+                EpochCount = tuneEpochs
+            };
+            int tuneEpoch = 0;
+            foreach (var metrics in gpuTuner.Run(tuneSet))
+                Console.WriteLine($"GPU tune epoch {++tuneEpoch:D2}  {metrics}  {gpuTuner.LastExecutionMessage}");
+        }
+
+        grid.SaveNails(smoke ? "prm_nails_gpu_smoke.bin" : "prm_nails_gpu.bin");
+        if (!smoke)
+            SaveActiveConfig(config);
+        Console.WriteLine(smoke
+            ? "\nGPU smoke nails saved → prm_nails_gpu_smoke.bin"
+            : "\nGPU-trained nails saved → prm_nails_gpu.bin");
         break;
     }
 
@@ -181,21 +287,21 @@ switch (mode)
     // ── OPTIMIZE (quick 5-candidate sweep, legacy) ────────────────────────────
     case "optimize":
     {
-        RunOptimization(vocab, dataset, trainSet, testSet, tuneSet, valSet);
+        RunOptimization(vocab, dataset, trainSet, testSet, tuneSet, valSet, window);
         break;
     }
 
     // ── AUTOOPTIMIZE (real hill-climbing convergence loop) ────────────────
     case "autooptimize":
     {
-        int   maxIter = 500;
-        float target  = 0.60f;
-        AutoOptimizer.Run(vocab, trainSet, tuneSet, valSet, testSet, maxIter, target);
+        int   maxIter = modeArgs.Length > 1 && int.TryParse(modeArgs[1], out var parsedIter) ? parsedIter : 500;
+        float target  = modeArgs.Length > 2 && float.TryParse(modeArgs[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsedTarget) ? parsedTarget : 0.60f;
+        AutoOptimizer.Run(vocab, tokenIds, maxIter, target);
         break;
     }
 
     default:
-        Console.WriteLine($"Unknown mode '{mode}'. Use: train | test | tune | val | benchmark | optimize | autooptimize | viz");
+        Console.WriteLine($"Unknown mode '{mode}'. Use: train | gputrain | test | tune | val | benchmark | optimize | autooptimize | viz | gpu");
         break;
 
     // ── VIZ ──────────────────────────────────────────────────────────────
@@ -218,12 +324,12 @@ switch (mode)
             if (vizIds.Length < 2)
             {
                 Console.WriteLine("Need ≥ 2 known words. Using random sample from corpus.");
-                vizIds = GetRandomVizSample(VocabularyBuilder.Tokenise(corpus).Select(t => vocab.FirstOrDefault(v => v.Text == t)?.Id ?? -1).Where(id => id >= 0).ToArray());
+                vizIds = GetRandomVizSample(VocabularyBuilder.Tokenise(corpus).Select(t => vocab.FirstOrDefault(v => v.Text == t)?.Id ?? -1).Where(id => id >= 0).ToArray(), window);
             }
         }
         else
         {
-            vizIds = GetRandomVizSample(VocabularyBuilder.Tokenise(corpus).Select(t => vocab.FirstOrDefault(v => v.Text == t)?.Id ?? -1).Where(id => id >= 0).ToArray());
+            vizIds = GetRandomVizSample(VocabularyBuilder.Tokenise(corpus).Select(t => vocab.FirstOrDefault(v => v.Text == t)?.Id ?? -1).Where(id => id >= 0).ToArray(), window);
         }
 
         var vizSequences = BuildVizSequences(tokenIds, vocab, window);
@@ -326,6 +432,66 @@ static Task<string?> StartConsoleRead(CancellationToken ct)
     return Task.Run(() => Console.ReadLine(), ct);
 }
 
+static void RunGpuDiagnostics()
+{
+    var devices = FlatPrmGpuBackend.DiscoverOpenClDevices();
+    Console.WriteLine("OpenCL devices:");
+    if (devices.Count == 0)
+    {
+        Console.WriteLine("  none found");
+    }
+    else
+    {
+        foreach (var d in devices)
+        {
+            Console.WriteLine(
+                $"  [{d.Index}] {d.Name} | vendor={d.Vendor} | platform={d.Platform} | type={d.DeviceType} | gpu={d.IsGpu}");
+        }
+    }
+
+    FlatPrmGpuSelfCheck.TryRunCpuGpuParity(out var result);
+    Console.WriteLine(result.Message);
+    if (result.Device is { } device)
+        Console.WriteLine($"Parity device: [{device.Index}] {device.Name}");
+    if (result.Comparison is { } comparison)
+    {
+        Console.WriteLine(
+            $"Compared={comparison.ComparedCount}, countDelta={comparison.CountDelta}, " +
+            $"maxPositionDelta={comparison.MaxPositionDelta}, maxVelocityDelta={comparison.MaxVelocityDelta}");
+    }
+
+    FlatPrmGpuSelfCheck.TryRunCpuGpuTrainingUpdateParity(out var trainingResult);
+    Console.WriteLine(trainingResult.Message);
+    if (trainingResult.Device is { } trainingDevice)
+        Console.WriteLine($"Training parity device: [{trainingDevice.Index}] {trainingDevice.Name}");
+    if (trainingResult.TokenOffsetXComparison is { } tokenX &&
+        trainingResult.TokenOffsetYComparison is { } tokenY &&
+        trainingResult.SharedOffsetXComparison is { } sharedX &&
+        trainingResult.SharedOffsetYComparison is { } sharedY)
+    {
+        Console.WriteLine(
+            $"Training deltas: tokenX={tokenX.MaxDelta}, tokenY={tokenY.MaxDelta}, " +
+            $"sharedX={sharedX.MaxDelta}, sharedY={sharedY.MaxDelta}");
+    }
+
+    FlatPrmGpuSelfCheck.TryRunCpuGpuFullTrainingParity(out var fullTrainingResult);
+    Console.WriteLine(fullTrainingResult.Message);
+    if (fullTrainingResult.Device is { } fullDevice)
+        Console.WriteLine($"Full training parity device: [{fullDevice.Index}] {fullDevice.Name}");
+    if (fullTrainingResult.BallComparison is { } ballComparison &&
+        fullTrainingResult.TokenOffsetXComparison is { } fullTokenX &&
+        fullTrainingResult.TokenOffsetYComparison is { } fullTokenY &&
+        fullTrainingResult.SharedOffsetXComparison is { } fullSharedX &&
+        fullTrainingResult.SharedOffsetYComparison is { } fullSharedY)
+    {
+        Console.WriteLine(
+            $"Full training deltas: pos={ballComparison.MaxPositionDelta}, vel={ballComparison.MaxVelocityDelta}, " +
+            $"tokenX={fullTokenX.MaxDelta}, tokenY={fullTokenY.MaxDelta}, " +
+            $"sharedX={fullSharedX.MaxDelta}, sharedY={fullSharedY.MaxDelta}, " +
+            $"active={fullTrainingResult.ActiveStateMatches}, contacts={fullTrainingResult.ContactStateMatches}");
+    }
+}
+
 static bool TryParseBrowserPlay(string json, VocabToken[] vocab, out int[] ids)
 {
     ids = [];
@@ -381,12 +547,188 @@ static async Task VizStreamAsync(VizServer server, DiamondGrid grid, VocabToken[
     Console.WriteLine($"[viz] [{string.Join(", ", labels)}] → \"{predLabel}\"");
 }
 
-static int[] GetRandomVizSample(int[] tokenIds)
+static int[] GetRandomVizSample(int[] tokenIds, int window)
 {
-    if (tokenIds.Length < 3) return tokenIds;
+    int sampleSize = Math.Clamp(window, 2, Math.Max(2, tokenIds.Length));
+    if (tokenIds.Length <= sampleSize) return tokenIds;
     var rng = new Random();
-    int start = rng.Next(0, tokenIds.Length - 3);
-    return tokenIds[start..(start + 3)];
+    int start = rng.Next(0, tokenIds.Length - sampleSize + 1);
+    return tokenIds[start..(start + sampleSize)];
+}
+
+static (int Window,
+        List<(int[] input, int target)> Dataset,
+        List<(int[] input, int target)> TrainSet,
+        List<(int[] input, int target)> TuneSet,
+        List<(int[] input, int target)> ValSet,
+        List<(int[] input, int target)> TestSet) BuildDataset(int[] tokenIds, int requestedWindow)
+{
+    int maxWindow = Math.Max(1, tokenIds.Length - 1);
+    int window = Math.Clamp(Math.Max(requestedWindow, MinComparableContextWindow), 1, maxWindow);
+
+    var dataset = new List<(int[] input, int target)>();
+    for (int targetIndex = 1; targetIndex < tokenIds.Length; targetIndex++)
+    {
+        int contextLength = Math.Min(window, targetIndex);
+        int start = targetIndex - contextLength;
+        dataset.Add((tokenIds[start..targetIndex], tokenIds[targetIndex]));
+    }
+
+    if (dataset.Count == 0 && tokenIds.Length > 1)
+        dataset.Add((tokenIds[..1], tokenIds[1]));
+
+    // Shuffle so all sentences mix across train/val/test — without this, rare words
+    // in the last sentences are never seen during training (sequential split problem).
+    var shuffleRng = new Random(42);
+    for (int i = dataset.Count - 1; i > 0; i--)
+    {
+        int j = shuffleRng.Next(i + 1);
+        (dataset[i], dataset[j]) = (dataset[j], dataset[i]);
+    }
+
+    if (dataset.Count == 0)
+        return (window, dataset, [], [], [], []);
+
+    // 70 / 10 / 20 split: train on fresh 70%, fine-tune on fresh 10%, validate on fresh 20%.
+    // tuneSet is carved out AFTER trainSet so it is genuinely unseen during main training.
+    int trainCount = Math.Clamp((int)Math.Round(dataset.Count * 0.70), 1, dataset.Count);
+    int tuneCount  = dataset.Count - trainCount > 1
+        ? Math.Clamp((int)Math.Round(dataset.Count * 0.10), 1, dataset.Count - trainCount - 1)
+        : 0;
+
+    var trainSet = dataset.Take(trainCount).ToList();
+    var tuneSet  = dataset.Skip(trainCount).Take(tuneCount).ToList();
+    var valSet   = dataset.Skip(trainCount + tuneCount).ToList();
+
+    if (tuneSet.Count == 0) tuneSet = trainSet;
+    if (valSet.Count == 0)  valSet  = dataset.TakeLast(1).ToList();
+
+    return (window, dataset, trainSet, tuneSet, valSet, valSet);
+}
+
+static DiamondConfig EnsureComparableContext(DiamondConfig cfg, int tokenCount)
+{
+    int maxWindow = Math.Max(1, tokenCount - 1);
+    int contextWindow = Math.Clamp(Math.Max(cfg.InputWindowSize, MinComparableContextWindow), 1, maxWindow);
+    if (contextWindow == cfg.InputWindowSize) return cfg;
+
+    return new DiamondConfig
+    {
+        RoleName = cfg.RoleName,
+        EntryWidth = cfg.EntryWidth,
+        MaxWidth = cfg.MaxWidth,
+        WideningRows = cfg.WideningRows,
+        NarrowingRows = cfg.NarrowingRows,
+        NailSpacing = cfg.NailSpacing,
+        DefaultRadius = cfg.DefaultRadius,
+        DeflectionAlpha = cfg.DeflectionAlpha,
+        DeflectionIdfPower = cfg.DeflectionIdfPower,
+        DeflectionAlphaY = cfg.DeflectionAlphaY,
+        SharedOffsetBlend = cfg.SharedOffsetBlend,
+        ScoreDistanceSigma = cfg.ScoreDistanceSigma,
+        ScoreProbeWeight = cfg.ScoreProbeWeight,
+        PredictionProbeTrainingWeight = cfg.PredictionProbeTrainingWeight,
+        ContextRelevanceDecay = cfg.ContextRelevanceDecay,
+        ContextReinforcementStrength = cfg.ContextReinforcementStrength,
+        DownstreamNailInfluence = cfg.DownstreamNailInfluence,
+        DownstreamNailInfluenceRows = cfg.DownstreamNailInfluenceRows,
+        DownstreamNailInfluenceRadius = cfg.DownstreamNailInfluenceRadius,
+        DownstreamNailInfluenceDecay = cfg.DownstreamNailInfluenceDecay,
+        DownstreamNailTargetDirectionality = cfg.DownstreamNailTargetDirectionality,
+        ContextSummaryBallCount = cfg.ContextSummaryBallCount,
+        ContextSummaryRow = cfg.ContextSummaryRow,
+        ContextSummaryMassScale = cfg.ContextSummaryMassScale,
+        ContextSummaryScoreWeight = cfg.ContextSummaryScoreWeight,
+        GravityG = cfg.GravityG,
+        ProximityBand = cfg.ProximityBand,
+        CollisionRadius = cfg.CollisionRadius,
+        DeltaTime = cfg.DeltaTime,
+        InputWindowSize = contextWindow,
+    };
+}
+
+static DiamondConfig PrepareGpuSmokeConfig(DiamondConfig cfg) => new()
+{
+    RoleName = cfg.RoleName,
+    EntryWidth = cfg.EntryWidth,
+    MaxWidth = cfg.MaxWidth,
+    WideningRows = cfg.WideningRows,
+    NarrowingRows = cfg.NarrowingRows,
+    NailSpacing = cfg.NailSpacing,
+    DefaultRadius = cfg.DefaultRadius,
+    DeflectionAlpha = cfg.DeflectionAlpha,
+    DeflectionIdfPower = cfg.DeflectionIdfPower,
+    DeflectionAlphaY = cfg.DeflectionAlphaY,
+    SharedOffsetBlend = cfg.SharedOffsetBlend,
+    ScoreDistanceSigma = cfg.ScoreDistanceSigma,
+    ScoreProbeWeight = cfg.ScoreProbeWeight,
+    PredictionProbeTrainingWeight = cfg.PredictionProbeTrainingWeight,
+    ContextRelevanceDecay = cfg.ContextRelevanceDecay,
+    ContextReinforcementStrength = cfg.ContextReinforcementStrength,
+    DownstreamNailInfluence = 0f,
+    DownstreamNailInfluenceRows = 0,
+    DownstreamNailInfluenceRadius = cfg.DownstreamNailInfluenceRadius,
+    DownstreamNailInfluenceDecay = cfg.DownstreamNailInfluenceDecay,
+    DownstreamNailTargetDirectionality = cfg.DownstreamNailTargetDirectionality,
+    ContextSummaryBallCount = 0,
+    ContextSummaryRow = cfg.ContextSummaryRow,
+    ContextSummaryMassScale = cfg.ContextSummaryMassScale,
+    ContextSummaryScoreWeight = cfg.ContextSummaryScoreWeight,
+    GravityG = 0f,
+    ProximityBand = cfg.ProximityBand,
+    CollisionRadius = 0f,
+    DeltaTime = cfg.DeltaTime,
+    InputWindowSize = cfg.InputWindowSize,
+};
+
+static TrainOptions ParseTrainOptions(string[] modeArgs)
+{
+    var positional = new List<string>();
+    int warmupIterations = 0;
+    bool noOptimizer = false;
+
+    for (int i = 1; i < modeArgs.Length; i++)
+    {
+        string arg = modeArgs[i];
+        if (!arg.StartsWith("--", StringComparison.Ordinal))
+        {
+            positional.Add(arg);
+            continue;
+        }
+
+        switch (arg)
+        {
+            case "--optimizer-warmup":
+            case "--warmup":
+                warmupIterations = 3;
+                if (i + 1 < modeArgs.Length && int.TryParse(modeArgs[i + 1], out var parsedWarmup))
+                {
+                    warmupIterations = parsedWarmup;
+                    i++;
+                }
+                break;
+            case "--no-optimizer":
+                noOptimizer = true;
+                break;
+            case "--gpu":
+                break;
+            default:
+                Console.WriteLine($"Ignoring unknown train option: {arg}");
+                break;
+        }
+    }
+
+    int? epochs = positional.Count > 0 && int.TryParse(positional[0], out var parsedEpochs)
+        ? parsedEpochs
+        : null;
+    float? lr = positional.Count > 1 && float.TryParse(positional[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsedLR)
+        ? parsedLR
+        : null;
+    float? decay = positional.Count > 2 && float.TryParse(positional[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsedDecay)
+        ? parsedDecay
+        : null;
+
+    return new TrainOptions(epochs, lr, decay, Math.Clamp(warmupIterations, 0, 10), noOptimizer, positional.Count > 0);
 }
 
 static string LoadCorpus(string? filename = null)
@@ -425,7 +767,8 @@ static void RunOptimization(
     List<(int[] input, int target)> trainSet,
     List<(int[] input, int target)> testSet,
     List<(int[] input, int target)> tuneSet,
-    List<(int[] input, int target)> valSet)
+    List<(int[] input, int target)> valSet,
+    int window)
 {
     var candidates = new[]
     {
@@ -458,6 +801,7 @@ static void RunOptimization(
             GravityG = cand.GravityG,
             ProximityBand = cand.ProximityBand,
             CollisionRadius = cand.CollisionRadius,
+            InputWindowSize = window,
         };
 
         var grid = new DiamondGrid(config, vocab, new Random(42));
@@ -505,7 +849,7 @@ static void RunOptimization(
     if (File.Exists("prm_nails_best.bin"))
     {
         File.Copy("prm_nails_best.bin", "prm_nails.bin", overwrite: true);
-        SaveBestConfig(bestCandidate);
+        SaveBestConfig(bestCandidate, window);
         Console.WriteLine("Best nails copied → prm_nails.bin");
     }
 }
@@ -539,7 +883,7 @@ static void SaveActiveConfig(DiamondConfig config)
     File.WriteAllText(path, json);
 }
 
-static void SaveBestConfig(Candidate cand)
+static void SaveBestConfig(Candidate cand, int window)
 {
     var cfg = new DiamondConfig
     {
@@ -554,7 +898,19 @@ static void SaveBestConfig(Candidate cand)
         GravityG = cand.GravityG,
         ProximityBand = cand.ProximityBand,
         CollisionRadius = cand.CollisionRadius,
+        InputWindowSize = window,
     };
 
     SaveActiveConfig(cfg);
+}
+
+public sealed record TrainOptions(
+    int? Epochs,
+    float? LearningRate,
+    float? Decay,
+    int WarmupIterations,
+    bool NoOptimizer,
+    bool HasExplicitSchedule)
+{
+    public static TrainOptions Default { get; } = new(null, null, null, 0, false, false);
 }

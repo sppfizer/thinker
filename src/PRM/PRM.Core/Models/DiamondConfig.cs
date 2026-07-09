@@ -54,6 +54,69 @@ public class DiamondConfig
     /// </summary>
     public float  DeflectionAlphaY  { get; init; } = 0.15f;
 
+    /// <summary>
+    /// Blend between shared token routing and position-specific residual routing.
+    /// 0 = old fully position-specific table, 1 = fully shared token table.
+    /// </summary>
+    public float  SharedOffsetBlend  { get; init; } = 0.0f;
+
+    /// <summary>Gaussian distance sigma in output-slot units. 0 = hard slot bucket voting.</summary>
+    public float  ScoreDistanceSigma { get; init; } = 0.0f;
+
+    /// <summary>Weight of the neutral prediction probe ball in scoring. 0 = disabled.</summary>
+    public float  ScoreProbeWeight   { get; init; } = 0.0f;
+
+    /// <summary>
+    /// Training strength for the neutral prediction probe (tokenId -1).
+    /// 0 = keep the probe observational only; >0 pulls its routing state toward the target.
+    /// </summary>
+    public float  PredictionProbeTrainingWeight { get; init; } = 0.0f;
+
+    /// <summary>
+    /// Recency decay for context-token relevance. 0 = all context tokens equally weighted.
+    /// Values near 0.1 make later tokens stronger while retaining older-token signal.
+    /// </summary>
+    public float  ContextRelevanceDecay { get; init; } = 0.0f;
+
+    /// <summary>
+    /// Restores decayed relevance for older tokens that reappear later in the same context.
+    /// Only has an effect when ContextRelevanceDecay > 0.
+    /// </summary>
+    public float  ContextReinforcementStrength { get; init; } = 1.0f;
+
+    /// <summary>
+    /// Fraction of a hit nail's training update that is also applied to nearby downstream nails.
+    /// 0 = disabled, preserving independent nail updates.
+    /// </summary>
+    public float  DownstreamNailInfluence { get; init; } = 0.0f;
+
+    /// <summary>Number of lower rows that receive downstream nail influence. 0 = disabled.</summary>
+    public int    DownstreamNailInfluenceRows { get; init; } = 0;
+
+    /// <summary>Horizontal downstream influence radius in nail-spacing units.</summary>
+    public float  DownstreamNailInfluenceRadius { get; init; } = 1.5f;
+
+    /// <summary>Per-row downstream influence decay. 0 = no row decay, larger = faster decay.</summary>
+    public float  DownstreamNailInfluenceDecay { get; init; } = 0.5f;
+
+    /// <summary>
+    /// Blend downstream influence from legacy nearby-copy (0) to target-directional pathing (1).
+    /// No effect unless DownstreamNailInfluence and DownstreamNailInfluenceRows are enabled.
+    /// </summary>
+    public float  DownstreamNailTargetDirectionality { get; init; } = 1.0f;
+
+    /// <summary>Number of retained context summary balls to synthesize after interaction. 0 = disabled.</summary>
+    public int    ContextSummaryBallCount { get; init; } = 0;
+
+    /// <summary>Row after which summary balls are created. -1 = widening/narrowing boundary.</summary>
+    public int    ContextSummaryRow { get; init; } = -1;
+
+    /// <summary>Mass multiplier for retained context summary balls.</summary>
+    public float  ContextSummaryMassScale { get; init; } = 1.0f;
+
+    /// <summary>Score weight for retained context summary balls. Only used when summaries are enabled.</summary>
+    public float  ContextSummaryScoreWeight { get; init; } = 1.0f;
+
     /// <summary>Gravitational constant G for ball-to-ball attraction.</summary>
     public float  GravityG          { get; init; } = 0.0f;
 

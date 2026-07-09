@@ -29,6 +29,8 @@ public class BallSimulator
     private readonly Nail[,]       _nails;      // shared physical props (radius, resistance)
     private readonly float[,,]     _tokenOffX;  // [row, col, pos*vocabSize+tokenId] — horizontal offset
     private readonly float[,,]     _tokenOffY;  // [row, col, pos*vocabSize+tokenId] — vertical-to-momentum
+    private readonly float[,,]     _sharedOffX; // [row, col, tokenId] — cross-position routing prior
+    private readonly float[,,]     _sharedOffY; // [row, col, tokenId] — cross-position routing prior
     private readonly int[]         _rowCols;
     private readonly MagnetField?  _magnet;
     private readonly int           _vocabSize;
@@ -55,6 +57,8 @@ public class BallSimulator
         int keys = _windowSize * (vocabSize + 1);
         _tokenOffX = new float[cfg.TotalRows, maxCols, keys];
         _tokenOffY = new float[cfg.TotalRows, maxCols, keys];
+        _sharedOffX = new float[cfg.TotalRows, maxCols, vocabSize + 1];
+        _sharedOffY = new float[cfg.TotalRows, maxCols, vocabSize + 1];
 
         // Small random initial offsets to break symmetry (within ±0.05 each axis)
         var rng = new Random(7);
@@ -69,6 +73,17 @@ public class BallSimulator
             _tokenOffX[r, c, t] = ox;
             _tokenOffY[r, c, t] = oy;
         }
+
+        for (int r = 0; r < cfg.TotalRows; r++)
+        for (int c = 0; c < maxCols; c++)
+        for (int t = 0; t < vocabSize + 1; t++)
+        {
+            float ox = (float)(rng.NextDouble() * 0.1 - 0.05);
+            float oy = (float)(rng.NextDouble() * 0.1 - 0.05);
+            ProjectUnitCircle(ref ox, ref oy);
+            _sharedOffX[r, c, t] = ox;
+            _sharedOffY[r, c, t] = oy;
+        }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -76,6 +91,7 @@ public class BallSimulator
     public List<Ball> Simulate(List<Ball> balls, float targetSlotCentre = 0f, float learningRate = 0f)
     {
         var active = new List<Ball>(balls);
+        bool summaryCreated = false;
 
         for (int row = 0; row < _cfg.TotalRows && active.Count > 0; row++)
         {
@@ -89,6 +105,8 @@ public class BallSimulator
             // 2. Ball–ball gravity + elastic collision
             if (_cfg.GravityG > 0f || _cfg.CollisionRadius > 0f)
                 ApplyBallInteractions(active);
+
+            AddContextSummaryBalls(active, balls, row, ref summaryCreated);
 
             // 3. Training: update per-token 2D nail offsets toward target
             if (learningRate > 0f && _magnet != null)
@@ -133,7 +151,8 @@ public class BallSimulator
 
         // Deep-copy input balls so the original state is unchanged
         var active = inputBalls.Select(b =>
-            new Ball(b.TokenId, b.Position, b.Mass, b.ContextPosition)).ToList();
+            new Ball(b.TokenId, b.Position, b.Mass, b.ContextPosition, b.RelevanceWeight)).ToList();
+        bool summaryCreated = false;
 
         for (int row = 0; row < totalRows; row++)
         {
@@ -173,8 +192,8 @@ public class BallSimulator
                 resists[c] = _nails[rc, cc].Resistance;
                 if (dominantTIdx >= 0 && dominantTIdx < _tokenOffX.GetLength(2))
                 {
-                    offXs[c] = _tokenOffX[row, c, dominantTIdx];
-                    offYs[c] = _tokenOffY[row, c, dominantTIdx];
+                    int slot = dominantTIdx % (_vocabSize + 1);
+                    (offXs[c], offYs[c]) = EffectiveOffset(row, c, dominantTIdx, slot);
                 }
             }
             nailBaseXsList[row] = baseXs;
@@ -186,6 +205,7 @@ public class BallSimulator
             // Apply physics (no training)
             foreach (var ball in active) ApplyNailDeflection(ball, row);
             if (_cfg.GravityG > 0f || _cfg.CollisionRadius > 0f) ApplyBallInteractions(active);
+            AddContextSummaryBalls(active, null, row, ref summaryCreated);
 
             const float MaxVel = 5f;
             float left  = LeftBorder(row);
@@ -310,11 +330,19 @@ public class BallSimulator
 
     public float[,,] GetTokenOffX() => _tokenOffX;
     public float[,,] GetTokenOffY() => _tokenOffY;
+    public float[,,] GetSharedOffX() => _sharedOffX;
+    public float[,,] GetSharedOffY() => _sharedOffY;
 
     public void SetTokenOffsets(float[,,] srcX, float[,,] srcY)
     {
         CopyInto(srcX, _tokenOffX);
         CopyInto(srcY, _tokenOffY);
+    }
+
+    public void SetSharedOffsets(float[,,] srcX, float[,,] srcY)
+    {
+        CopyInto(srcX, _sharedOffX);
+        CopyInto(srcY, _sharedOffY);
     }
 
     // ── Physics ───────────────────────────────────────────────────────────────
@@ -329,9 +357,9 @@ public class BallSimulator
 
         int tIdx = TokenIndex(ball);
         if (tIdx < 0 || tIdx >= _tokenOffX.GetLength(2)) return;
+        int slot = TokenSlot(ball);
         int nailId = NailKey(row, col);
-        float offX   = _tokenOffX[row, col, tIdx];
-        float offY   = _tokenOffY[row, col, tIdx];
+        var (offX, offY) = EffectiveOffset(row, col, tIdx, slot);
         float radius = _nails[row, col].Radius;
 
         if (ball.ContactNailIds.Count == 0 || ball.ContactNailIds[^1] != nailId)
@@ -384,21 +412,86 @@ public class BallSimulator
         }
     }
 
+    private void AddContextSummaryBalls(List<Ball> active, List<Ball>? owner, int row, ref bool summaryCreated)
+    {
+        if (summaryCreated) return;
+
+        int requested = Math.Max(_cfg.ContextSummaryBallCount, 0);
+        if (requested <= 0) return;
+
+        int summaryRow = _cfg.ContextSummaryRow < 0 ? _cfg.WideningRows : _cfg.ContextSummaryRow;
+        summaryRow = Math.Clamp(summaryRow, 0, _cfg.TotalRows - 1);
+        if (row != summaryRow) return;
+
+        float massScale = Math.Max(_cfg.ContextSummaryMassScale, 0f);
+        if (massScale <= 0f) return;
+
+        var candidates = active
+            .Where(b => b.TokenId >= 0 && b.Active && !b.Stuck)
+            .OrderBy(b => b.Position)
+            .ToArray();
+        if (candidates.Length == 0) return;
+
+        int summaryCount = Math.Min(requested, candidates.Length);
+        for (int groupIndex = 0; groupIndex < summaryCount; groupIndex++)
+        {
+            int start = groupIndex * candidates.Length / summaryCount;
+            int end = (groupIndex + 1) * candidates.Length / summaryCount;
+            if (end <= start) continue;
+
+            ReadOnlySpan<Ball> group = candidates.AsSpan(start, end - start);
+            float weightedMass = 0f;
+            float positionSum = 0f;
+            float velocitySum = 0f;
+            float relevanceSum = 0f;
+            float massSum = 0f;
+            int contextPosition = 0;
+
+            foreach (var ball in group)
+            {
+                float relevance = Math.Clamp(ball.RelevanceWeight, 0f, 1f);
+                float weight = Math.Max(ball.Mass * relevance, 1e-6f);
+                weightedMass += weight;
+                positionSum += ball.Position * weight;
+                velocitySum += ball.Velocity * weight;
+                relevanceSum += relevance;
+                massSum += ball.Mass * relevance;
+                contextPosition = Math.Max(contextPosition, ball.ContextPosition);
+            }
+
+            float position = positionSum / weightedMass;
+            float velocity = velocitySum / weightedMass;
+            float relevanceWeight = Math.Clamp(relevanceSum / group.Length, 0f, 1f);
+            float mass = Math.Max(massSum / group.Length * massScale, 0.001f);
+            var summary = new Ball(-2 - groupIndex, position, mass, contextPosition, relevanceWeight)
+            {
+                Velocity = velocity
+            };
+
+            active.Add(summary);
+            owner?.Add(summary);
+        }
+
+        summaryCreated = true;
+    }
+
     private void ApplyNailUpdates(List<Ball> balls, int row, float targetCentre, float lr)
     {
         foreach (var ball in balls)
         {
-            if (ball.TokenId < 0) continue;   // skip neutral probe ball — no semantics to train
+            bool isPredictionProbe = ball.TokenId == -1;
+            if (ball.TokenId < 0 && !isPredictionProbe) continue;
+
+            float probeTrainingWeight = Math.Max(_cfg.PredictionProbeTrainingWeight, 0f);
+            if (isPredictionProbe && probeTrainingWeight <= 0f) continue;
 
             int col = ball.LastNailCol;
             if (col < 0 || col >= _rowCols[row]) continue;
 
             int tIdx = ball.LastNailTIdx;
             if (tIdx < 0 || tIdx >= _tokenOffX.GetLength(2)) continue;
-            var nail = _nails[row, col];
-            float resistance = nail.Resistance;
-            float density = Math.Max(nail.Density, 0.1f);
-            float radius = nail.Radius;
+            int slot = TokenSlot(ball);
+            if (slot < 0 || slot >= _sharedOffX.GetLength(2)) continue;
 
             // Magnet force along x-axis toward targetCentre
             float forceX = _magnet!.Force(row, ball.Position, targetCentre);
@@ -414,25 +507,111 @@ public class BallSimulator
             // Small y-axis component: helps build momentum toward target
             float normForceY = normForceX * 0.25f;
 
-            float currentX = _tokenOffX[row, col, tIdx];
-            float currentY = _tokenOffY[row, col, tIdx];
-
             // Weight and nail inertia both influence how far the nail can move.
-            float massFactor = MathF.Sqrt(Math.Max(ball.Mass, 0.01f));
-            float inertia    = Math.Max(resistance * density * (1f + radius), 0.05f);
+            float relevance = Math.Clamp(ball.RelevanceWeight, 0f, 1f);
+            float massFactor = isPredictionProbe
+                ? probeTrainingWeight
+                : MathF.Sqrt(Math.Max(ball.Mass, 0.01f)) * relevance;
+            if (massFactor <= 0f) continue;
 
             // Error-correction: pull current offset toward the ideal (magnet direction).
             // Natural equilibrium at current==ideal; amplitude shrinks as the nail converges.
             // Clamp scale to [0,1] to prevent overshoot when inertia is at its floor.
             float idealX = normForceX;
             float idealY = normForceY;
-            float scale  = Math.Clamp(lr * massFactor / inertia, 0f, 1f);
-            float newX   = currentX + scale * (idealX - currentX);
-            float newY   = currentY + scale * (idealY - currentY);
-            ProjectUnitCircle(ref newX, ref newY);
-            _tokenOffX[row, col, tIdx] = newX;
-            _tokenOffY[row, col, tIdx] = newY;
+            float scale  = UpdateScale(row, col, lr, massFactor);
+            ApplyOffsetUpdate(row, col, tIdx, slot, idealX, idealY, scale);
+            ApplyDownstreamNailUpdates(row, col, tIdx, slot, idealX, idealY, targetCentre, lr, massFactor);
         }
+    }
+
+    private void ApplyDownstreamNailUpdates(
+        int sourceRow, int sourceCol, int tIdx, int slot,
+        float sourceIdealX, float sourceIdealY, float targetCentre, float lr, float massFactor)
+    {
+        float influence = Math.Clamp(_cfg.DownstreamNailInfluence, 0f, 1f);
+        int rows = Math.Min(
+            Math.Max(_cfg.DownstreamNailInfluenceRows, 0),
+            Math.Max(_cfg.TotalRows - sourceRow - 1, 0));
+        float radiusUnits = Math.Max(_cfg.DownstreamNailInfluenceRadius, 0f);
+        if (influence <= 0f || rows <= 0 || radiusUnits <= 0f) return;
+
+        float sourceX = NailBaseX(sourceRow, sourceCol);
+        float spacing = Math.Max(_cfg.NailSpacing, 1e-6f);
+        int colRadius = Math.Max(1, (int)MathF.Ceiling(radiusUnits) + 1);
+        float decay = Math.Max(_cfg.DownstreamNailInfluenceDecay, 0f);
+        float directionality = Math.Clamp(_cfg.DownstreamNailTargetDirectionality, 0f, 1f);
+
+        for (int dr = 1; dr <= rows; dr++)
+        {
+            int row = sourceRow + dr;
+            if (row >= _cfg.TotalRows) break;
+
+            float pathBlend = directionality * dr / (rows + 1f);
+            float pathCentreX = Lerp(sourceX, targetCentre, pathBlend);
+            int centreCol = NailColumn(pathCentreX, row);
+            int startCol = Math.Max(0, centreCol - colRadius);
+            int endCol = Math.Min(_rowCols[row] - 1, centreCol + colRadius);
+            if (startCol > endCol) continue;
+
+            float rowWeight = 1f / (1f + decay * (dr - 1));
+            for (int col = startCol; col <= endCol; col++)
+            {
+                float nailX = NailBaseX(row, col);
+                float dxUnits = Math.Abs(nailX - pathCentreX) / spacing;
+                if (dxUnits > radiusUnits) continue;
+
+                float lateralWeight = 1f - dxUnits / radiusUnits;
+                float weight = influence * rowWeight * lateralWeight;
+                if (weight <= 0f) continue;
+
+                float rowWidth = Math.Max(GridWidth(row), 1f);
+                float localIdealX = _magnet!.Force(row, nailX, targetCentre) * _cfg.TotalRows / rowWidth;
+                float localIdealY = localIdealX * 0.25f;
+                float idealX = Lerp(sourceIdealX, localIdealX, directionality);
+                float idealY = Lerp(sourceIdealY, localIdealY, directionality);
+                float scale = UpdateScale(row, col, lr, massFactor) * weight;
+                ApplyOffsetUpdate(row, col, tIdx, slot, idealX, idealY, scale);
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static float Lerp(float a, float b, float t) => a + (b - a) * t;
+
+    private float UpdateScale(int row, int col, float lr, float massFactor)
+    {
+        var nail = _nails[row, col];
+        float density = Math.Max(nail.Density, 0.1f);
+        float inertia = Math.Max(nail.Resistance * density * (1f + nail.Radius), 0.05f);
+        return Math.Clamp(lr * massFactor / inertia, 0f, 1f);
+    }
+
+    private void ApplyOffsetUpdate(
+        int row, int col, int tIdx, int slot,
+        float idealX, float idealY, float scale)
+    {
+        scale = Math.Clamp(scale, 0f, 1f);
+        if (scale <= 0f) return;
+
+        float currentX = _tokenOffX[row, col, tIdx];
+        float currentY = _tokenOffY[row, col, tIdx];
+        float sharedX = _sharedOffX[row, col, slot];
+        float sharedY = _sharedOffY[row, col, slot];
+        float blend  = Math.Clamp(_cfg.SharedOffsetBlend, 0f, 1f);
+        float posScale = scale * (1f - blend);
+        float sharedScale = scale * blend;
+
+        float newX   = currentX + posScale * (idealX - currentX);
+        float newY   = currentY + posScale * (idealY - currentY);
+        float newSharedX = sharedX + sharedScale * (idealX - sharedX);
+        float newSharedY = sharedY + sharedScale * (idealY - sharedY);
+        ProjectUnitCircle(ref newX, ref newY);
+        ProjectUnitCircle(ref newSharedX, ref newSharedY);
+        _tokenOffX[row, col, tIdx] = newX;
+        _tokenOffY[row, col, tIdx] = newY;
+        _sharedOffX[row, col, slot] = newSharedX;
+        _sharedOffY[row, col, slot] = newSharedY;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -456,8 +635,27 @@ public class BallSimulator
         // Position-aware routing key: pos × (vocabSize+1) + tokenId
         // Each context window position has its own independent routing table.
         int pos  = Math.Clamp(ball.ContextPosition, 0, _windowSize - 1);
-        int slot = (ball.TokenId >= 0 && ball.TokenId < _vocabSize) ? ball.TokenId : _vocabSize;
+        int slot = TokenSlot(ball);
         return pos * (_vocabSize + 1) + slot;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int TokenSlot(Ball ball) =>
+        (ball.TokenId >= 0 && ball.TokenId < _vocabSize) ? ball.TokenId : _vocabSize;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private (float x, float y) EffectiveOffset(int row, int col, int tIdx, int tokenSlot)
+    {
+        float blend = Math.Clamp(_cfg.SharedOffsetBlend, 0f, 1f);
+        if (blend <= 0f)
+            return (_tokenOffX[row, col, tIdx], _tokenOffY[row, col, tIdx]);
+
+        float posX = _tokenOffX[row, col, tIdx];
+        float posY = _tokenOffY[row, col, tIdx];
+        float sharedX = _sharedOffX[row, col, tokenSlot];
+        float sharedY = _sharedOffY[row, col, tokenSlot];
+        return (posX * (1f - blend) + sharedX * blend,
+                posY * (1f - blend) + sharedY * blend);
     }
 
     /// <summary>
