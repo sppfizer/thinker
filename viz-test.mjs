@@ -1,8 +1,9 @@
 /**
  * viz-test.mjs — Automated verification of PRM.Viz.
  * Uses vendor puppeteer-core + system Chrome.
- * Starts PRM.Viz with --no-browser, connects Puppeteer, verifies
- * that the setInterval clock drives the animation after 'result' arrives.
+ * Starts PRM.App viz mode with --no-browser, connects Puppeteer, verifies
+ * that the setInterval clock drives the animation after 'result' arrives
+ * and that a second token set can be rendered on the same browser session.
  */
 
 import { spawn }               from 'child_process';
@@ -17,16 +18,16 @@ const PUPPETEER_URL = new URL(
   import.meta.url
 ).href;
 const CHROME  = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const VIZ_DIR = path.join(__dir, 'src', 'PRM', 'PRM.Viz');
+const VIZ_DIR = path.join(__dir, 'src', 'PRM', 'PRM.App');
 const TEST_PORT = 5090;
 
 console.log('PRM Visualizer — automated test');
 console.log('================================');
 
-// ── 0. Start PRM.Viz ─────────────────────────────────────────────────────────
-console.log(`\n[0] Starting PRM.Viz --no-browser on port ${TEST_PORT}...`);
-const vizProc = spawn('dotnet', ['run', '-c', 'Debug', '--', '--port', String(TEST_PORT), '--no-browser', 'the', 'cat', 'sat'], {
-  cwd: VIZ_DIR, stdio: ['ignore', 'pipe', 'pipe']
+// ── 0. Start PRM.App viz mode ────────────────────────────────────────────────
+console.log(`\n[0] Starting PRM.App viz --no-browser on port ${TEST_PORT}...`);
+const vizProc = spawn('dotnet', ['run', '-c', 'Debug', '--', 'viz', '--port', String(TEST_PORT), '--no-browser', 'the', 'cat', 'sat'], {
+  cwd: VIZ_DIR, stdio: ['pipe', 'pipe', 'pipe']
 });
 let vizLog = '';
 vizProc.stdout.on('data', d => { vizLog += d; process.stdout.write('  viz> ' + d); });
@@ -107,7 +108,48 @@ try {
   });
   bright > 500 ? ok(`Canvas has ${bright} bright pixels`) : fail(`Canvas only ${bright} bright pixels`);
 
-  // 5. Screenshot
+  // 5. Send a second token set and verify the same browser session updates.
+  console.log('\n[4] Sending a second token set to the running viz session...');
+  vizProc.stdin.write('the cat on\n');
+
+  const firstResultCount = types.filter(t => t === 'result').length;
+  const firstClearCount   = types.filter(t => t === 'clear').length;
+  const dl2 = Date.now() + 15000;
+  while (Date.now() < dl2) {
+    await sleep(400);
+    const counts = await page.evaluate(() => {
+      const msgs = window.__vizMessages || [];
+      return {
+        results: msgs.filter(m => m.type === 'result').length,
+        clears:  msgs.filter(m => m.type === 'clear').length
+      };
+    });
+    if (counts.results >= firstResultCount + 1 && counts.clears >= firstClearCount + 1) break;
+  }
+
+  const secondState = await page.evaluate(() => {
+    const msgs = window.__vizMessages || [];
+    return {
+      results: msgs.filter(m => m.type === 'result').length,
+      clears:  msgs.filter(m => m.type === 'clear').length,
+      input:   document.getElementById('inputLabel')?.textContent || '',
+      pred:    document.getElementById('predLabel')?.textContent || ''
+    };
+  });
+
+  secondState.clears >= firstClearCount + 1 ? ok('Second clear message received') : fail('no second clear');
+  secondState.results >= firstResultCount + 1 ? ok('Second result message received') : fail('no second result');
+  secondState.input.includes('the · cat · on') ? ok(`Input label updated to ${secondState.input}`) : fail(`input label stayed at '${secondState.input}'`);
+
+  await sleep(3000);
+  const rowText2 = await page.evaluate(() => document.getElementById('rowCounter')?.textContent || '');
+  const rowMatch2 = rowText2.match(/Row (\d+)/);
+  const rowNum2   = rowMatch2 ? +rowMatch2[1] : 0;
+  rowNum2 > 0
+    ? ok(`Second animation clock advanced to ${rowText2}`)
+    : fail(`Row counter still at '${rowText2}' after second run`);
+
+  // 6. Screenshot
   await page.screenshot({ path: path.join(__dir, 'viz-screenshot.png') });
   ok('viz-screenshot.png saved');
 

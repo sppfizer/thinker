@@ -200,6 +200,9 @@ switch (mode)
     case "viz":
     {
         if (File.Exists("prm_nails.bin")) { grid.LoadNails("prm_nails.bin"); Console.WriteLine("Nails loaded."); }
+        int port = 5050;
+        { var pi = Array.IndexOf(modeArgs, "--port"); if (pi >= 0 && pi + 1 < modeArgs.Length) int.TryParse(modeArgs[pi + 1], out port); }
+        bool noBrowser = modeArgs.Contains("--no-browser");
 
         // Words to visualise: everything after "viz" on the command line
         int[] vizIds;
@@ -221,11 +224,14 @@ switch (mode)
             vizIds = GetRandomVizSample(VocabularyBuilder.Tokenise(corpus).Select(t => vocab.FirstOrDefault(v => v.Text == t)?.Id ?? -1).Where(id => id >= 0).ToArray());
         }
 
-        await using var server = new VizServer(vocab, 5050);
+        await using var server = new VizServer(vocab, port);
         Console.WriteLine($"Visualizer at http://localhost:{server.Port}/");
-        Console.WriteLine("Opening browser…");
-        try { Process.Start(new ProcessStartInfo($"http://localhost:{server.Port}/") { UseShellExecute = true }); }
-        catch { Console.WriteLine("(Could not open browser — open the URL manually)"); }
+        if (!noBrowser)
+        {
+            Console.WriteLine("Opening browser…");
+            try { Process.Start(new ProcessStartInfo($"http://localhost:{server.Port}/") { UseShellExecute = true }); }
+            catch { Console.WriteLine("(Could not open browser — open the URL manually)"); }
+        }
 
         using var exitCts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; exitCts.Cancel(); };
