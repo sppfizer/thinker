@@ -1,0 +1,18 @@
+{
+  "RoleName": "Analyst",
+  "EntryWidth": 26,
+  "MaxWidth": 99.49321,
+  "WideningRows": 49,
+  "NarrowingRows": 18,
+  "NailSpacing": 2,
+  "DefaultRadius": 0.3636492,
+  "DeflectionAlpha": 0.6776297,
+  "DeflectionAlphaY": 0.36894524,
+  "GravityG": 0.027561054,
+  "ProximityBand": 21.708237,
+  "CollisionRadius": 0.12460765,
+  "DeltaTime": 0.1,
+  "InputWindowSize": 3,
+  "TotalRows": 67,
+  "DefaultDiameter": 0.3636492
+}

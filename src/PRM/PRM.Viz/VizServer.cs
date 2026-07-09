@@ -14,30 +14,54 @@ namespace PRM.Viz;
 public sealed class VizServer : IAsyncDisposable
 {
     private readonly HttpListener   _http = new();
-    private readonly int            _port;
+    private int                     _port;
     private readonly VocabToken[]   _vocab;
-    private readonly string         _html;
+    private string                  _html = "";
 
     // Active WebSocket client (only one at a time needed)
     private HttpListenerWebSocketContext? _wsCtx;
 
+    public int Port => _port;
+
     public VizServer(VocabToken[] vocab, int port = 5050)
     {
-        _port  = port;
         _vocab = vocab;
-        _html  = HtmlPage.Build(port);
 
-        _http.Prefixes.Add($"http://localhost:{port}/");
-        _http.Start();
+        // Try requested port, then increment until one is free (handles stale HTTP.sys registrations)
+        for (int tryPort = port; tryPort < port + 20; tryPort++)
+        {
+            try
+            {
+                _http.Prefixes.Add($"http://localhost:{tryPort}/");
+                _http.Start();
+                _port = tryPort;
+                _html = HtmlPage.Build(tryPort);
+                if (tryPort != port)
+                    Console.WriteLine($"[viz] Port {port} busy — using {tryPort} instead.");
+                return;
+            }
+            catch (System.Net.HttpListenerException)
+            {
+                _http = new System.Net.HttpListener();  // reset for next attempt
+            }
+        }
+        throw new InvalidOperationException($"No free port found in range {port}–{port + 19}");
     }
 
     /// <summary>
     /// Loop accepting HTTP requests until the browser's WebSocket upgrade arrives.
     /// Serves the HTML page on the first GET /, returns 204 for everything else
     /// (favicon, robots.txt, etc.) so those requests don't consume the WS slot.
+    /// Resets the active WS context so the server can accept a new client after
+    /// the previous one disconnects.
     /// </summary>
     public async Task WaitForClientAsync(CancellationToken ct)
     {
+        // Reset previous client so a new one can connect
+        if (_wsCtx?.WebSocket.State == WebSocketState.Open)
+            await _wsCtx.WebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", default);
+        _wsCtx = null;
+
         bool htmlServed = false;
         while (_wsCtx == null)
         {

@@ -14,29 +14,29 @@ internal static class HtmlPage
 <title>PRM — Ball Visualizer</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body   { background: #080818; color: #c0c8ff; font-family: 'Segoe UI', sans-serif;
+  body   { background: #0f1526; color: #c8d4ff; font-family: 'Segoe UI', sans-serif;
            overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
   canvas { flex: 1; display: block; }
 
   #topbar { display: flex; align-items: center; gap: 16px; padding: 6px 14px;
-            background: rgba(10,10,40,0.9); border-bottom: 1px solid #1a1a4a; flex-shrink: 0; }
-  #topbar h1 { font-size: 14px; font-weight: 600; color: #8888ff; white-space: nowrap; }
+            background: rgba(15,20,45,0.95); border-bottom: 1px solid #2a2a6a; flex-shrink: 0; }
+  #topbar h1 { font-size: 14px; font-weight: 600; color: #99aaff; white-space: nowrap; }
   #inputLabel { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: 2px; }
   #predLabel  { font-size: 14px; padding: 3px 10px; border-radius: 20px;
-                background: rgba(80,80,200,0.3); border: 1px solid #3a3a8a; }
-  #predLabel.correct { background: rgba(0,180,100,0.3); border-color: #00cc66; color: #00ff88; }
-  #predLabel.wrong   { background: rgba(200,50,50,0.3);  border-color: #cc3333; color: #ff6666; }
-  #status { margin-left: auto; font-size: 11px; color: #556; }
+                background: rgba(80,80,200,0.35); border: 1px solid #4a4ab0; }
+  #predLabel.correct { background: rgba(0,180,100,0.35); border-color: #00cc66; color: #00ff88; }
+  #predLabel.wrong   { background: rgba(200,50,50,0.35);  border-color: #cc3333; color: #ff6666; }
+  #status { margin-left: auto; font-size: 11px; color: #6677aa; }
 
   #controls { display: flex; align-items: center; gap: 10px; padding: 6px 14px;
-              background: rgba(10,10,40,0.9); border-top: 1px solid #1a1a4a; flex-shrink: 0; }
-  button { background: #1a1a5a; color: #aabeff; border: 1px solid #3a3a8a; padding: 4px 12px;
+              background: rgba(15,20,45,0.95); border-top: 1px solid #2a2a6a; flex-shrink: 0; }
+  button { background: #1e2466; color: #b8ccff; border: 1px solid #4040a0; padding: 4px 12px;
            border-radius: 4px; cursor: pointer; font-size: 12px; transition: background .15s; }
-  button:hover { background: #2a2a7a; }
-  button.active { background: #3030aa; border-color: #6666cc; color: #fff; }
-  label  { font-size: 11px; color: #778; display: flex; align-items: center; gap: 4px; }
-  input[type=range] { width: 110px; accent-color: #6666cc; }
-  #rowCounter { font-size: 12px; color: #6688aa; min-width: 80px; }
+  button:hover { background: #2a3280; }
+  button.active { background: #3838c0; border-color: #7070ee; color: #fff; }
+  label  { font-size: 11px; color: #8899bb; display: flex; align-items: center; gap: 4px; }
+  input[type=range] { width: 110px; accent-color: #7070ee; }
+  #rowCounter { font-size: 12px; color: #7090bb; min-width: 80px; }
   #legend { display: flex; gap: 10px; margin-left: auto; }
   .leg-item { font-size: 11px; display: flex; align-items: center; gap: 4px; }
   .leg-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
@@ -214,13 +214,13 @@ function drawDiamondBackground() {
   }
   ctx.closePath();
   const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  grad.addColorStop(0,   'rgba(60,60,160,0.08)');
-  grad.addColorStop(0.5, 'rgba(80,80,200,0.12)');
-  grad.addColorStop(1,   'rgba(40,40,120,0.08)');
+  grad.addColorStop(0,   'rgba(70,80,200,0.12)');
+  grad.addColorStop(0.5, 'rgba(90,100,230,0.18)');
+  grad.addColorStop(1,   'rgba(50,60,160,0.12)');
   ctx.fillStyle = grad;
   ctx.fill();
-  ctx.strokeStyle = '#1e2060';
-  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#2a3080';
+  ctx.lineWidth = 2;
   ctx.stroke();
 
   // Thinking / summarising divider
@@ -242,23 +242,32 @@ function drawNails() {
   const frame = frames[Math.min(curRow, frames.length - 1)];
   if (!frame || !frame.nails) return;
   const r = frame.row;
-  const nailR = 3;
   frame.nails.forEach(nail => {
     const p = toScreen(nail.x, r);
-    // Only draw if inside canvas
-    if (p.x < 0 || p.x > canvas.width) return;
+    if (p.x < 2 || p.x > canvas.width - 2) return;
+
+    // Nail circle — brighter
     ctx.beginPath();
-    ctx.arc(p.x, p.y, nailR, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(180,180,255,0.35)';
-    ctx.fill();
-    // Deflection arrow
-    if (Math.abs(nail.ox) > 0.02) {
-      const arrowLen = 6 * Math.abs(nail.ox);
+    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle   = 'rgba(200,210,255,0.55)';
+    ctx.strokeStyle = 'rgba(150,170,255,0.4)';
+    ctx.lineWidth   = 1;
+    ctx.fill(); ctx.stroke();
+
+    // Deflection arrow — length proportional to |ox|, color by direction
+    if (Math.abs(nail.ox) > 0.01) {
+      const arrowLen = Math.min(18, 12 * Math.abs(nail.ox));
+      const dir      = Math.sign(nail.ox);
+      const col      = dir > 0 ? '#ffdd44' : '#44ccff';
       ctx.beginPath();
       ctx.moveTo(p.x, p.y);
-      ctx.lineTo(p.x + arrowLen * Math.sign(nail.ox), p.y);
-      ctx.strokeStyle = nail.ox > 0 ? 'rgba(255,200,80,0.6)' : 'rgba(100,200,255,0.6)';
-      ctx.lineWidth = 1.5;
+      ctx.lineTo(p.x + arrowLen * dir, p.y);
+      // Arrow head
+      ctx.lineTo(p.x + (arrowLen - 4) * dir, p.y - 3);
+      ctx.moveTo(p.x + arrowLen * dir, p.y);
+      ctx.lineTo(p.x + (arrowLen - 4) * dir, p.y + 3);
+      ctx.strokeStyle = col;
+      ctx.lineWidth   = 2;
       ctx.stroke();
     }
   });
@@ -302,30 +311,40 @@ function drawCurrentBalls() {
   frame.balls.forEach(b => {
     if (b.TokenId < 0) return;  // skip probe ball
     const p   = toScreen(b.Position, frame.row);
-    const r   = Math.max(8, Math.min(22, 8 + b.Mass * 18));
+    const r   = Math.max(12, Math.min(28, 12 + b.Mass * 22));  // bigger: min 12px
     const col = tokenColor(b.TokenId);
 
-    // Glow
-    const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2);
-    grad.addColorStop(0,   col + 'aa');
-    grad.addColorStop(0.5, col + '44');
-    grad.addColorStop(1,   col + '00');
-    ctx.beginPath(); ctx.arc(p.x, p.y, r * 2, 0, Math.PI * 2);
-    ctx.fillStyle = grad; ctx.fill();
+    // Outer glow (3 layers for strong visibility)
+    [r * 3.5, r * 2.2, r * 1.4].forEach((gr, i) => {
+      const alpha = ['18', '33', '66'][i];
+      const g2 = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, gr);
+      g2.addColorStop(0,   col + alpha);
+      g2.addColorStop(1,   col + '00');
+      ctx.beginPath(); ctx.arc(p.x, p.y, gr, 0, Math.PI * 2);
+      ctx.fillStyle = g2; ctx.fill();
+    });
 
-    // Ball circle
+    // Ball fill — fully opaque solid center
     ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fillStyle   = col + 'cc';
-    ctx.strokeStyle = col;
-    ctx.lineWidth   = 1.5;
+    const ballGrad = ctx.createRadialGradient(p.x - r*0.3, p.y - r*0.3, r*0.1, p.x, p.y, r);
+    ballGrad.addColorStop(0, '#ffffff');
+    ballGrad.addColorStop(0.25, col);
+    ballGrad.addColorStop(1, col + 'bb');
+    ctx.fillStyle   = ballGrad;
+    ctx.strokeStyle = '#ffffff88';
+    ctx.lineWidth   = 2;
     ctx.fill(); ctx.stroke();
 
-    // Token label
+    // Token label — bold, black outline for contrast
     const label = cfg.vocab[b.TokenId]?.Text?.trim() ?? `#${b.TokenId}`;
-    ctx.fillStyle = '#fff';
-    ctx.font      = `bold ${Math.max(9, r - 2)}px Segoe UI`;
+    const fs = Math.max(10, Math.min(r - 1, 16));
+    ctx.font      = `bold ${fs}px Segoe UI`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    ctx.strokeStyle = '#00000099';
+    ctx.lineWidth   = 3;
+    ctx.strokeText(label.length > 8 ? label.slice(0, 7) + '…' : label, p.x, p.y);
+    ctx.fillStyle = '#ffffff';
     ctx.fillText(label.length > 8 ? label.slice(0, 7) + '…' : label, p.x, p.y);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';

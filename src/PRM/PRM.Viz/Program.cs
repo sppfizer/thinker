@@ -1,8 +1,11 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using PRM.Core.Engine;
 using PRM.Core.Models;
 using PRM.Viz;
+
+Console.OutputEncoding = Encoding.UTF8;
 
 // ── 1. Load corpus + vocabulary ───────────────────────────────────────────────
 string? corpusFile = null;
@@ -58,64 +61,77 @@ string[] inputLabels = inputIds.Select(id => vocab[id].Text.Trim()).ToArray();
 Console.WriteLine($"Visualising: [{string.Join(", ", inputLabels)}]");
 
 // ── 4. Start WebSocket server ─────────────────────────────────────────────────
-const int port = 5050;
+int port = 5050;
+{ var pi = Array.IndexOf(vizArgs, "--port"); if (pi >= 0 && pi + 1 < vizArgs.Length) int.TryParse(vizArgs[pi + 1], out port); }
+bool noBrowser = vizArgs.Contains("--no-browser");
+
 await using var server = new VizServer(vocab, port);
+Console.WriteLine($"Visualizer running at http://localhost:{server.Port}/");
 
-Console.WriteLine($"Visualizer running at http://localhost:{port}/");
-Console.WriteLine("Opening browser…");
-
-// Open browser
-try { Process.Start(new ProcessStartInfo($"http://localhost:{port}/") { UseShellExecute = true }); }
-catch { Console.WriteLine("Could not open browser automatically — please open the URL manually."); }
-
-// Wait for browser to connect — loops until WebSocket upgrade arrives (handles favicon etc.)
-using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-Console.WriteLine("Waiting for browser to connect (30s timeout)…");
-await server.WaitForClientAsync(cts.Token);
-
-// ── 5. Send config ────────────────────────────────────────────────────────────
-// Use grid.Config (post auto-scale) so browser coordinates match C# physics exactly
-var gridInfo = new DiamondGridInfo(
-    grid.Config.TotalRows, grid.Config.WideningRows,
-    grid.Config.EntryWidth, grid.Config.MaxWidth);
-
-await server.SendConfigAsync(gridInfo);
-await Task.Delay(300); // let browser process config
-
-// ── 6. Simulate + stream ──────────────────────────────────────────────────────
-Console.WriteLine("Streaming simulation frames…");
-await VisualiseSingle(server, grid, vocab, inputIds);
-
-// ── 7. Keep server alive for interaction ──────────────────────────────────────
-// ── 7. Keep server alive — accept more viz requests ───────────────────────────
-Console.WriteLine("\nVisualization running.");
-Console.WriteLine("  → Enter new words to visualise (e.g. 'the cat sat')");
-Console.WriteLine("  → Press Ctrl+C to quit\n");
+if (!noBrowser)
+{
+    Console.WriteLine("Opening browser…");
+    try { Process.Start(new ProcessStartInfo($"http://localhost:{server.Port}/") { UseShellExecute = true }); }
+    catch { Console.WriteLine("Could not open browser automatically — please open the URL manually."); }
+}
 
 using var exitCts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; exitCts.Cancel(); };
 
+// ── 5. Serve loop — accept a client, stream simulation, repeat ────────────────
+// Grid config sent once per client connection
+var gridInfo = new DiamondGridInfo(
+    grid.Config.TotalRows, grid.Config.WideningRows,
+    grid.Config.EntryWidth, grid.Config.MaxWidth);
+
+Console.WriteLine("Waiting for browser to connect (Ctrl+C to quit)…");
+
 while (!exitCts.IsCancellationRequested)
 {
-    Console.Write("tokens> ");
-    string? line;
-    try { line = await Task.Run(() => Console.ReadLine(), exitCts.Token); }
+    // Accept next client (handles favicon, 204 for junk, waits for WS upgrade)
+    using var connCts = CancellationTokenSource.CreateLinkedTokenSource(exitCts.Token);
+    connCts.CancelAfter(TimeSpan.FromSeconds(noBrowser ? 30 : 300));
+    try
+    {
+        await server.WaitForClientAsync(connCts.Token);
+    }
     catch (OperationCanceledException) { break; }
 
-    if (line == null || exitCts.IsCancellationRequested) break;
-    line = line.Trim();
-    if (line == "") { await VisualiseSingle(server, grid, vocab, inputIds); continue; }
-
-    var newWords = VocabularyBuilder.Tokenise(line)
-        .Select(t => vocab.FirstOrDefault(v => v.Text.Trim().Equals(t.Trim(), StringComparison.OrdinalIgnoreCase))?.Id ?? -1)
-        .Where(id => id >= 0)
-        .Take(3)
-        .ToArray();
-
-    if (newWords.Length < 2) { Console.WriteLine("  Need at least 2 known words."); continue; }
-
-    inputIds = newWords;
+    // Send config + initial simulation
+    await server.SendConfigAsync(gridInfo);
+    await Task.Delay(300);
+    Console.WriteLine("Streaming simulation frames…");
     await VisualiseSingle(server, grid, vocab, inputIds);
+
+    // If no-browser (test mode): exit after first client
+    if (noBrowser) break;
+
+    // Interactive REPL for the connected client
+    Console.WriteLine("\n  → Enter new words to visualise (e.g. 'the cat sat'), or Enter to replay");
+    Console.WriteLine("  → Press Ctrl+C to quit\n");
+
+    while (!exitCts.IsCancellationRequested)
+    {
+        Console.Write("tokens> ");
+        string? line;
+        try { line = await Task.Run(() => Console.ReadLine(), exitCts.Token); }
+        catch (OperationCanceledException) { goto nextClient; }
+
+        if (line == null) break;  // stdin closed → wait for next browser connection
+        line = line.Trim();
+        if (line == "") { await VisualiseSingle(server, grid, vocab, inputIds); continue; }
+
+        var newWords = VocabularyBuilder.Tokenise(line)
+            .Select(t => vocab.FirstOrDefault(v => v.Text.Trim().Equals(t.Trim(), StringComparison.OrdinalIgnoreCase))?.Id ?? -1)
+            .Where(id => id >= 0)
+            .Take(3)
+            .ToArray();
+
+        if (newWords.Length < 2) { Console.WriteLine("  Need at least 2 known words."); continue; }
+        inputIds = newWords;
+        await VisualiseSingle(server, grid, vocab, inputIds);
+    }
+    nextClient:;
 }
 
 Console.WriteLine("Bye!");

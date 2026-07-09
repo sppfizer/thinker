@@ -1,0 +1,23 @@
+{
+  "name": "thinker",
+  "version": "1.0.0",
+  "description": "> An experimental design for a non-neural-network language model that trains entirely forward, without backpropagation.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sppfizer/thinker.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/sppfizer/thinker/issues"
+  },
+  "homepage": "https://github.com/sppfizer/thinker#readme",
+  "devDependencies": {
+    "puppeteer-core": "^21.11.0"
+  }
+}

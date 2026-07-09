@@ -5,3 +5,5 @@ src/**/obj/
 *.user
 *.suo
 prm_nails*.bin
+node_modules/
+viz-screenshot.png

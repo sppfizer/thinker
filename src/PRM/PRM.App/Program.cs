@@ -1,8 +1,12 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using PRM.Core.Engine;
 using PRM.Core.Models;
 using PRM.Core.Modes;
+
+// Ensure UTF-8 output on all platforms (fixes mojibake in Windows PowerShell console)
+Console.OutputEncoding = Encoding.UTF8;
 
 Console.WriteLine("╔══════════════════════════════════════════╗");
 Console.WriteLine("║  PRM — Physical Routing Model  v0.1      ║");
