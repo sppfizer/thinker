@@ -111,6 +111,7 @@ public sealed class VizServer : IAsyncDisposable
             wideningRows= info.WideningRows,
             entryWidth  = info.EntryWidth,
             maxWidth    = info.MaxWidth,
+            nailSpacing = info.NailSpacing,
             vocab       = _vocab.Select(v => new { v.Id, v.Text, v.Mass, v.SlotLeft, v.SlotRight, v.SlotWidth }).ToArray()
         }, ct);
 
@@ -148,5 +149,5 @@ public sealed class VizServer : IAsyncDisposable
 }
 
 /// <summary>Minimal grid geometry info needed by the browser.</summary>
-public record DiamondGridInfo(int TotalRows, int WideningRows, float EntryWidth, float MaxWidth);
+public record DiamondGridInfo(int TotalRows, int WideningRows, float EntryWidth, float MaxWidth, float NailSpacing = 2.0f);
 

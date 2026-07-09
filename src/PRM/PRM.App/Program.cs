@@ -238,7 +238,7 @@ switch (mode)
             try { await server.WaitForClientAsync(connCts.Token); }
             catch (OperationCanceledException) { break; }
 
-            var gridInfo = new DiamondGridInfo(grid.Config.TotalRows, grid.Config.WideningRows, grid.Config.EntryWidth, grid.Config.MaxWidth);
+            var gridInfo = new DiamondGridInfo(grid.Config.TotalRows, grid.Config.WideningRows, grid.Config.EntryWidth, grid.Config.MaxWidth, grid.Config.NailSpacing);
             await server.SendConfigAsync(gridInfo);
             await Task.Delay(200);
             await VizStreamAsync(server, grid, vocab, vizIds);

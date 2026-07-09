@@ -82,7 +82,7 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; exitCts.Cancel(); };
 // Grid config sent once per client connection
 var gridInfo = new DiamondGridInfo(
     grid.Config.TotalRows, grid.Config.WideningRows,
-    grid.Config.EntryWidth, grid.Config.MaxWidth);
+    grid.Config.EntryWidth, grid.Config.MaxWidth, grid.Config.NailSpacing);
 
 Console.WriteLine("Waiting for browser to connect (Ctrl+C to quit)…");
 

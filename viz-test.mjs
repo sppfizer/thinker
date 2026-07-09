@@ -18,7 +18,7 @@ const PUPPETEER_URL = new URL(
 ).href;
 const CHROME  = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const VIZ_DIR = path.join(__dir, 'src', 'PRM', 'PRM.Viz');
-const TEST_PORT = 5060 + Math.floor(Math.random() * 40);
+const TEST_PORT = 5090;
 
 console.log('PRM Visualizer — automated test');
 console.log('================================');

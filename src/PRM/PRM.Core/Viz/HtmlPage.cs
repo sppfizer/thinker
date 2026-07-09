@@ -121,27 +121,36 @@ function toScreen(gx, rowF) {
 }
 
 // ── Physical ball position — Galton-board path ─────────────────────────────
-// frac 0.00–0.45 → straight down (x fixed at x0)
-// frac 0.45–0.55 → at nail row  (x begins to shift)
-// frac 0.55–1.00 → deflected path to x1
+// Phase 0 (frac 0.00–0.40): ball falls STRAIGHT DOWN, x = x0
+// Phase 1 (frac 0.40–0.58): ball swings to the deflection side of nearest nail
+//   arc peak = nail.x + sign(ox) * halfSpacing  →  clearly visible lane choice
+// Phase 2 (frac 0.58–1.00): ball settles at actual model position x1
 function easeOut(t) { return 1 - (1-t)*(1-t); }
 
-function ballPos(b0, b1, frac) {
-  const x0 = b0.Position, x1 = b1 ? b1.Position : x0;
-  const r0 = b0.row ?? 0,  r1 = b1 ? (b1.row ?? r0+1) : r0+1;
-  let x, rowF;
+function ballPos(x0, r0, x1, nail, frac) {
+  const halfSp  = (cfg?.nailSpacing ?? 2.0) / 2;
+  const dx      = x1 - x0;
+  // Deflection direction: use nail's learned offset (ox) when significant; fall back to actual dx
+  const deflDir = (nail && Math.abs(nail.ox) > 0.015)
+                    ? Math.sign(nail.ox)
+                    : (dx >= 0 ? 1 : -1);
+  // Arc peak: swing to the gap on the deflection side of the nearest nail
+  const arcX    = nail
+                    ? nail.x + deflDir * halfSp * 0.82
+                    : x0 + deflDir * halfSp;
 
-  if (frac <= 0.45) {
+  let x, rowF;
+  if (frac <= 0.40) {
     x    = x0;
-    rowF = r0 + (frac / 0.45) * 0.48;          // falls to 48% of row gap
-  } else if (frac <= 0.55) {
-    const t = (frac - 0.45) / 0.10;
-    x    = x0 + (x1 - x0) * t * 0.35;          // slight start of deflection
-    rowF = r0 + 0.48 + t * 0.04;               // at nail level
+    rowF = r0 + (frac / 0.40) * 0.44;
+  } else if (frac <= 0.58) {
+    const t = (frac - 0.40) / 0.18;
+    x    = x0 + (arcX - x0) * easeOut(t);
+    rowF = r0 + 0.44 + t * 0.08;
   } else {
-    const t = easeOut((frac - 0.55) / 0.45);
-    x    = x0 + (x1 - x0) * (0.35 + 0.65*t);  // deflect to final position
-    rowF = r0 + 0.52 + ((frac - 0.55)/0.45) * 0.48;
+    const t = easeOut((frac - 0.58) / 0.42);
+    x    = arcX + (x1 - arcX) * t;
+    rowF = r0 + 0.52 + ((frac - 0.58) / 0.42) * 0.48;
   }
   return { x, rowF };
 }
@@ -149,43 +158,34 @@ function ballPos(b0, b1, frac) {
 // ── Get current interpolated balls for drawing ────────────────────────────
 function getCurBalls() {
   if (!frames.length) return [];
-  const ri   = Math.min(Math.floor(curStep), frames.length - 1);
-  const frac = curStep - Math.floor(curStep);
-  const f0   = frames[ri];
-  const f1   = frames[Math.min(ri+1, frames.length-1)];
+  const ri    = Math.min(Math.floor(curStep), frames.length - 1);
+  const frac  = curStep - Math.floor(curStep);
+  const f0    = frames[ri];
+  const f1    = frames[Math.min(ri+1, frames.length-1)];
+  const nails = f0.nails || [];
+
   return (f0.balls || [])
     .filter(b => b.TokenId >= 0)
     .map(b => {
       const b1 = f1?.balls?.find(b2 => b2.TokenId === b.TokenId);
-      const pos = ballPos(
-        { Position: b.Position, row: f0.row },
-        b1 ? { Position: b1.Position, row: f1.row } : null,
-        frac
-      );
-      return { TokenId: b.TokenId, Mass: b.Mass, ...pos };
+      // Find nearest nail to this ball's entry position
+      let nearNail = null, nearDist = Infinity;
+      nails.forEach(n => { const d = Math.abs(b.Position - n.x); if (d < nearDist) { nearDist = d; nearNail = n; } });
+      const x1  = b1?.Position ?? b.Position;
+      const pos = ballPos(b.Position, f0.row, x1, nearNail, frac);
+      return { TokenId: b.TokenId, Mass: b.Mass, x: pos.x, rowF: pos.rowF };
     });
 }
 
-// ── Which nail is nearest to a ball at the approach phase ─────────────────
-function nearestNailIdx(ballX, nails, pxPerUnit) {
-  let best = -1, bestDist = Infinity;
-  nails.forEach((n, i) => {
-    const d = Math.abs(ballX - n.x);
-    if (d < bestDist) { bestDist = d; best = i; }
-  });
-  return best;
-}
-
-// ── Trails (historical path) ──────────────────────────────────────────────
+// ── Trails (historical path) — stored as grid coords to survive resize ───
 function updateTrails() {
-  const ri   = Math.min(Math.floor(curStep), frames.length - 1);
-  const frac = curStep - Math.floor(curStep);
   getCurBalls().forEach(b => {
     if (!trails[b.TokenId]) trails[b.TokenId] = [];
-    const arr = trails[b.TokenId];
-    const s   = toScreen(b.x, b.rowF ?? b.rowFloat);
+    const arr  = trails[b.TokenId];
     const last = arr[arr.length - 1];
-    if (!last || Math.hypot(s.x-last.x, s.y-last.y) > 1) arr.push({ x: s.x, y: s.y });
+    // Store grid coords {gx, rowF} — converted to screen at draw time
+    if (!last || Math.abs(b.x - last.gx) > 0.05 || Math.abs(b.rowF - last.rowF) > 0.05)
+      arr.push({ gx: b.x, rowF: b.rowF });
   });
 }
 
@@ -329,7 +329,7 @@ function drawNails() {
   const ri     = Math.min(Math.floor(curStep), frames.length-1);
   const frac   = curStep - Math.floor(curStep);
   const curRow = frames[ri]?.row ?? ri;
-  const atNail = frac >= 0.35 && frac <= 0.75;  // ball is near nail level
+  const atNail = frac >= 0.35 && frac <= 0.75;
 
   // Determine hit nails for current step
   const hitSet = new Set();
@@ -346,31 +346,36 @@ function drawNails() {
   frames.forEach(f => {
     if (!f.nails) return;
     const isActive = f.row === curRow;
+    // Diamond boundary for this row — clip out-of-bounds padding nails
+    const gw = gridW(f.row);
+    const gl = (cfg.maxWidth - gw) / 2;
+    const gr = gl + gw;
+
     f.nails.forEach((nail, ni) => {
-      const p  = toScreen(nail.x, f.row);
-      if (p.x < 4 || p.x > C.width-4) return;
+      // Skip nails outside the diamond boundary for this row
+      if (nail.x < gl - 0.15 || nail.x > gr + 0.15) return;
+
+      const p = toScreen(nail.x, f.row);
 
       if (isActive) {
-        const isHit = hitSet.has(ni);
-        const rs    = nail.rs ?? 0.5;
-        const baseR = Math.max(4, Math.min(13, (nail.r ?? 0.5) * 13));
-        const nr    = isHit ? baseR * 1.5 : baseR;
+        const isHit  = hitSet.has(ni);
+        const rs     = nail.rs ?? 0.5;
+        const baseR  = Math.max(5, Math.min(14, (nail.r ?? 0.5) * 14));
+        const nr     = isHit ? baseR * 1.5 : baseR;
 
         if (isHit) {
-          // Yellow burst glow — ball is interacting with this nail
           const hit = ctx_radial(p.x, p.y, nr, nr*4, 'rgba(255,215,55,0.55)', 'rgba(255,215,55,0)');
           X.beginPath(); X.arc(p.x, p.y, nr*4, 0, Math.PI*2); X.fillStyle=hit; X.fill();
-          X.beginPath(); X.arc(p.x, p.y, nr, 0, Math.PI*2);
+          X.beginPath(); X.arc(p.x, p.y, nr,   0, Math.PI*2);
           X.fillStyle='rgba(255,225,80,0.92)'; X.strokeStyle='rgba(255,255,160,1)'; X.lineWidth=2; X.fill(); X.stroke();
         } else {
-          // Normal active-row nail — bright white/blue
           X.beginPath(); X.arc(p.x, p.y, nr, 0, Math.PI*2);
-          X.fillStyle  =`rgba(205,220,255,${(0.42+rs*0.48).toFixed(2)})`;
-          X.strokeStyle=`rgba(165,190,255,${(0.48+rs*0.36).toFixed(2)})`;
-          X.lineWidth=1.4+rs*0.4; X.fill(); X.stroke();
+          X.fillStyle  =`rgba(205,220,255,${(0.55+rs*0.40).toFixed(2)})`;
+          X.strokeStyle=`rgba(165,190,255,${(0.60+rs*0.30).toFixed(2)})`;
+          X.lineWidth=1.6+rs*0.5; X.fill(); X.stroke();
         }
 
-        // Deflection arrow — shows learned direction
+        // Deflection arrow
         if (Math.abs(nail.ox) > 0.008) {
           const al  = Math.min(22, 14 * Math.abs(nail.ox));
           const dir = Math.sign(nail.ox);
@@ -382,12 +387,12 @@ function drawNails() {
           X.strokeStyle=col; X.lineWidth=isHit?2.5:1.8; X.stroke();
         }
       } else {
-        // Background grid nail — subtle dot
-        const nr = Math.max(2, Math.min(6, (nail.r ?? 0.5) * 7));
+        // Background grid nails — clearly visible dots, sized by nail.r
+        const nr = Math.max(3, Math.min(8, (nail.r ?? 0.5) * 9));
         X.beginPath(); X.arc(p.x, p.y, nr, 0, Math.PI*2);
-        X.fillStyle  ='rgba(140,158,225,0.35)';
-        X.strokeStyle='rgba(110,132,215,0.40)';
-        X.lineWidth=0.7; X.fill(); X.stroke();
+        X.fillStyle  ='rgba(160,175,240,0.55)';
+        X.strokeStyle='rgba(130,150,225,0.60)';
+        X.lineWidth=1.0; X.fill(); X.stroke();
       }
     });
   });
@@ -402,7 +407,10 @@ function drawTrailLines() {
   Object.entries(trails).forEach(([id, pts]) => {
     if (pts.length < 2) return;
     X.beginPath();
-    pts.forEach((p,i) => i===0 ? X.moveTo(p.x,p.y) : X.lineTo(p.x,p.y));
+    pts.forEach((p, i) => {
+      const s = toScreen(p.gx, p.rowF);   // convert grid→screen at draw time (resize-safe)
+      i === 0 ? X.moveTo(s.x, s.y) : X.lineTo(s.x, s.y);
+    });
     X.strokeStyle = ballColor(+id) + '70';
     X.lineWidth   = 1.8; X.stroke();
   });
@@ -410,9 +418,13 @@ function drawTrailLines() {
 
 // ── Balls ─────────────────────────────────────────────────────────────────────
 function drawBalls() {
+  // Max ball radius = 42% of the nail spacing in screen pixels so balls fit between nails
+  const nailSpPx = cfg ? (cfg.nailSpacing ?? 2.0) / cfg.maxWidth * SW() : 40;
+  const maxR     = nailSpPx * 0.42;
+
   getCurBalls().forEach(b => {
-    const p   = toScreen(b.x, b.rowFloat ?? b.rowF);
-    const r   = Math.max(10, Math.min(42, 10 + b.Mass * 32));
+    const p   = toScreen(b.x, b.rowF);
+    const r   = Math.max(6, Math.min(maxR, 6 + b.Mass * maxR * 1.8));
     const col = ballColor(b.TokenId);
 
     // Glow
