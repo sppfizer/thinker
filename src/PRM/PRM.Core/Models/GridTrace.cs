@@ -33,6 +33,12 @@ public class GridTrace
     /// <summary>Per-nail Y-offset averaged across active balls. [row][nailIndex]</summary>
     public float[][] NailOffYs { get; init; } = [];
 
+    /// <summary>Per-nail physical radius (influence size). [row][nailIndex]</summary>
+    public float[][] NailRadii { get; init; } = [];
+
+    /// <summary>Per-nail resistance (higher = stiffer). [row][nailIndex]</summary>
+    public float[][] NailResistances { get; init; } = [];
+
     /// <summary>Number of active nails per row.</summary>
     public int[] RowNailCounts { get; init; } = [];
 

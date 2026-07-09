@@ -152,11 +152,13 @@ static async Task VisualiseSingle(VizServer server, DiamondGrid grid, VocabToken
     for (int r = 0; r < trace.RowFrames.Length; r++)
     {
         var balls  = trace.RowFrames[r];
-        var nailXs = r < trace.NailBaseXs.Length ? trace.NailBaseXs[r] : [];
-        var offXs  = r < trace.NailOffXs.Length  ? trace.NailOffXs[r]  : [];
+        var nailXs    = r < trace.NailBaseXs.Length      ? trace.NailBaseXs[r]      : [];
+        var offXs     = r < trace.NailOffXs.Length       ? trace.NailOffXs[r]       : [];
+        var nailRadii = r < trace.NailRadii.Length       ? trace.NailRadii[r]       : [];
+        var nailRes   = r < trace.NailResistances.Length ? trace.NailResistances[r] : [];
         int rowNum = r < trace.TotalRows ? r : trace.TotalRows;
 
-        await server.SendFrameAsync(balls, nailXs, offXs, rowNum);
+        await server.SendFrameAsync(balls, nailXs, offXs, nailRadii, nailRes, rowNum);
         await Task.Delay(30); // 30ms per row → smooth animation; browser can replay at any speed
     }
 

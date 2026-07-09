@@ -68,11 +68,12 @@ internal static class HtmlPage
 "use strict";
 
 // ─── State ────────────────────────────────────────────────────────────────────
-let cfg    = null;   // { totalRows, wideningRows, entryWidth, maxWidth, vocab[] }
-let frames = [];     // Array of row frames: { row, balls[], nails[] }
-let curRow = 0;      // Frame index currently displayed
-let playing= false;
-let lastTs = 0;
+let cfg     = null;   // { totalRows, wideningRows, entryWidth, maxWidth, vocab[] }
+let frames  = [];     // Array of row frames: { row, balls[], nails[] }
+let curRow  = 0;      // Frame index currently displayed
+let playing = false;
+let lastTs  = 0;
+let autoPlayPending = false;  // auto-starts animation on first frame
 
 const ballColors = ['#ff6b6b','#4ecdc4','#f7c948','#bb8fce','#ff9a5c','#74b9ff','#a29bfe'];
 
@@ -117,12 +118,14 @@ function handle(msg) {
     case 'clear':
       frames = [];
       curRow = 0;
-      playing= false;
+      playing = false;
+      autoPlayPending = true;
+      document.getElementById('btnPlay').textContent = '▶ Play';
+      document.getElementById('btnPlay').classList.remove('active');
       updateRowCounter();
       document.getElementById('inputLabel').textContent = msg.tokens.join(' · ');
       document.getElementById('predLabel').textContent  = '—';
       document.getElementById('predLabel').className    = '';
-      // Pre-assign colors to the input tokens so they're stable
       msg.tokens.forEach((t, i) => {
         if (cfg) {
           const vocab = cfg.vocab.find(v => v.Text.trim() === t.trim());
@@ -135,6 +138,15 @@ function handle(msg) {
 
     case 'frame':
       frames.push(msg);
+      if (autoPlayPending) {
+        autoPlayPending = false;
+        curRow  = 0;
+        playing = true;
+        lastTs  = 0;
+        document.getElementById('btnPlay').textContent = '⏸ Pause';
+        document.getElementById('btnPlay').classList.add('active');
+        requestAnimationFrame(animLoop);
+      }
       if (!playing) { curRow = frames.length - 1; draw(); }
       updateRowCounter();
       break;
@@ -238,34 +250,57 @@ function drawDiamondBackground() {
 }
 
 function drawNails() {
-  if (!frames.length) return;
-  const frame = frames[Math.min(curRow, frames.length - 1)];
-  if (!frame || !frame.nails) return;
-  const r = frame.row;
-  frame.nails.forEach(nail => {
-    const p = toScreen(nail.x, r);
+  if (!frames.length || !cfg) return;
+  const curFrame = frames[Math.min(curRow, frames.length - 1)];
+  const curR = curFrame ? curFrame.row : -1;
+
+  // Background grid: all rows drawn faintly so the full diamond grid is visible
+  frames.forEach(f => {
+    if (!f.nails || f.row === curR) return;
+    f.nails.forEach(nail => {
+      const p  = toScreen(nail.x, f.row);
+      if (p.x < 2 || p.x > canvas.width - 2) return;
+      const nr = Math.max(2, Math.min(8, (nail.r ?? 0.5) * 10));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, nr, 0, Math.PI * 2);
+      ctx.fillStyle   = 'rgba(140,155,220,0.13)';
+      ctx.strokeStyle = 'rgba(100,120,200,0.20)';
+      ctx.lineWidth   = 0.5;
+      ctx.fill(); ctx.stroke();
+    });
+  });
+
+  // Current row: bright nails with size, resistance, and deflection arrows
+  if (!curFrame || !curFrame.nails) return;
+  curFrame.nails.forEach(nail => {
+    const p  = toScreen(nail.x, curR);
     if (p.x < 2 || p.x > canvas.width - 2) return;
 
-    // Nail circle — brighter
+    // Nail size: Radius 0–1 → 3–14px
+    const nr = Math.max(3, Math.min(14, (nail.r ?? 0.5) * 14));
+    // Resistance → brightness/opacity (stiff nails look more solid)
+    const rs   = nail.rs ?? 0.5;
+    const fill = `rgba(200,215,255,${(0.35 + rs * 0.55).toFixed(2)})`;
+    const strk = `rgba(160,185,255,${(0.40 + rs * 0.40).toFixed(2)})`;
+
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
-    ctx.fillStyle   = 'rgba(200,210,255,0.55)';
-    ctx.strokeStyle = 'rgba(150,170,255,0.4)';
-    ctx.lineWidth   = 1;
+    ctx.arc(p.x, p.y, nr, 0, Math.PI * 2);
+    ctx.fillStyle   = fill;
+    ctx.strokeStyle = strk;
+    ctx.lineWidth   = 1 + rs;
     ctx.fill(); ctx.stroke();
 
-    // Deflection arrow — length proportional to |ox|, color by direction
+    // Deflection arrow
     if (Math.abs(nail.ox) > 0.01) {
-      const arrowLen = Math.min(18, 12 * Math.abs(nail.ox));
+      const arrowLen = Math.min(20, 14 * Math.abs(nail.ox));
       const dir      = Math.sign(nail.ox);
       const col      = dir > 0 ? '#ffdd44' : '#44ccff';
       ctx.beginPath();
       ctx.moveTo(p.x, p.y);
       ctx.lineTo(p.x + arrowLen * dir, p.y);
-      // Arrow head
-      ctx.lineTo(p.x + (arrowLen - 4) * dir, p.y - 3);
+      ctx.lineTo(p.x + (arrowLen - 5) * dir, p.y - 3);
       ctx.moveTo(p.x + arrowLen * dir, p.y);
-      ctx.lineTo(p.x + (arrowLen - 4) * dir, p.y + 3);
+      ctx.lineTo(p.x + (arrowLen - 5) * dir, p.y + 3);
       ctx.strokeStyle = col;
       ctx.lineWidth   = 2;
       ctx.stroke();
@@ -311,7 +346,7 @@ function drawCurrentBalls() {
   frame.balls.forEach(b => {
     if (b.TokenId < 0) return;  // skip probe ball
     const p   = toScreen(b.Position, frame.row);
-    const r   = Math.max(12, Math.min(28, 12 + b.Mass * 22));  // bigger: min 12px
+    const r   = Math.max(8, Math.min(46, 8 + b.Mass * 38));  // 8–46px: clearly different sizes
     const col = tokenColor(b.TokenId);
 
     // Outer glow (3 layers for strong visibility)

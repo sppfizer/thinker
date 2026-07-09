@@ -125,6 +125,8 @@ public class BallSimulator
         var nailBaseXsList = new float[totalRows][];
         var nailOffXsList  = new float[totalRows][];
         var nailOffYsList  = new float[totalRows][];
+        var nailRadiiList  = new float[totalRows][];
+        var nailResistList = new float[totalRows][];
         var rowNailCounts  = new int[totalRows];
         var rowFrames      = new PRM.Core.Models.BallFrame[totalRows + 1][];
 
@@ -143,13 +145,19 @@ public class BallSimulator
             rowFrames[row] = active.Select(b =>
                 new PRM.Core.Models.BallFrame(b.TokenId, b.Position, b.Velocity, b.Mass, b.ContextPosition)).ToArray();
 
-            // Record nail base positions + averaged offset across active balls
-            var baseXs = new float[nailCount];
-            var offXs  = new float[nailCount];
-            var offYs  = new float[nailCount];
+            // Record nail base positions + averaged offset + physical properties
+            var baseXs  = new float[nailCount];
+            var offXs   = new float[nailCount];
+            var offYs   = new float[nailCount];
+            var radii   = new float[nailCount];
+            var resists = new float[nailCount];
             for (int c = 0; c < nailCount; c++)
             {
                 baseXs[c] = NailBaseX(row, c);
+                int rc = Math.Min(row, _nails.GetLength(0) - 1);
+                int cc = Math.Min(c,   _nails.GetLength(1) - 1);
+                radii[c]   = _nails[rc, cc].Radius;
+                resists[c] = _nails[rc, cc].Resistance;
                 if (active.Count > 0)
                 {
                     foreach (var b in active)
@@ -168,6 +176,8 @@ public class BallSimulator
             nailBaseXsList[row] = baseXs;
             nailOffXsList[row]  = offXs;
             nailOffYsList[row]  = offYs;
+            nailRadiiList[row]  = radii;
+            nailResistList[row] = resists;
 
             // Apply physics (no training)
             foreach (var ball in active) ApplyNailDeflection(ball, row);
@@ -201,6 +211,8 @@ public class BallSimulator
             NailBaseXs     = nailBaseXsList,
             NailOffXs      = nailOffXsList,
             NailOffYs      = nailOffYsList,
+            NailRadii      = nailRadiiList,
+            NailResistances= nailResistList,
             RowNailCounts  = rowNailCounts,
             RowFrames      = rowFrames,
         };

@@ -120,13 +120,19 @@ public sealed class VizServer : IAsyncDisposable
 
     /// <summary>Send one row of ball positions + nail data to the browser.</summary>
     public Task SendFrameAsync(PRM.Core.Models.BallFrame[] balls, float[] nailXs, float[] offXs,
+                               float[] nailRadii, float[] nailResists,
                                int row, CancellationToken ct = default) =>
         SendAsync(new
         {
             type  = "frame",
             row,
             balls = balls.Select(b => new { b.TokenId, b.Position, b.Mass, b.Velocity }).ToArray(),
-            nails = nailXs.Zip(offXs, (x, ox) => new { x, ox }).ToArray()
+            nails = nailXs.Select((x, i) => new {
+                x,
+                ox = i < offXs.Length       ? offXs[i]       : 0f,
+                r  = i < nailRadii.Length   ? nailRadii[i]   : 0.5f,
+                rs = i < nailResists.Length ? nailResists[i] : 0.5f
+            }).ToArray()
         }, ct);
 
     /// <summary>Send the final prediction result.</summary>
