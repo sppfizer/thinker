@@ -67,6 +67,20 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         int,
         ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
         ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense>> _integrateKernel;
+    private readonly Action<
+        Index1D,
+        FlatPrmGpuKernelConfig,
+        int,
+        float,
+        float,
+        ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<float, Stride1D.Dense>,
+        ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>,
+        ArrayView1D<int, Stride1D.Dense>,
+        ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense>> _sampleKernel;
     private bool _offsetsDirty;
 
     public string RunMessage => _run.Message;
@@ -173,6 +187,22 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
             ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
             ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense>>(
                 FlatPrmGpuKernels.IntegrateAndResolveBoundsRow);
+
+        _sampleKernel = _accelerator.LoadAutoGroupedStreamKernel<
+            Index1D,
+            FlatPrmGpuKernelConfig,
+            int,
+            float,
+            float,
+            ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>,
+            ArrayView1D<int, Stride1D.Dense>,
+            ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense>>(
+                FlatPrmGpuKernels.RunTrainingSampleRows);
     }
 
     public FlatPrmGpuTrainingSampleResult TrainSample(
@@ -193,47 +223,20 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         _nailPropertiesBuffer.CopyFromCPU(_nailPropertiesArray);
 
         float targetCentre = _grid.SlotCentreForFlatTraining(targetTokenId);
-        for (int row = 0; row < _config.TotalRows; row++)
-        {
-            _deflectKernel(
-                _ballArray.Length,
-                _gpuConfig,
-                row,
-                _ballsBuffer.View,
-                _tokenOffsetXBuffer.View,
-                _tokenOffsetYBuffer.View,
-                _sharedOffsetXBuffer.View,
-                _sharedOffsetYBuffer.View,
-                _nailPropertiesBuffer.View,
-                _contactsBuffer.View,
-                _rowGeometryBuffer.View);
-
-            _interactionKernel(
-                1,
-                _gpuConfig,
-                _ballsBuffer.View);
-
-            _updateKernel(
-                1,
-                _gpuConfig,
-                row,
-                learningRate,
-                targetCentre,
-                _ballsBuffer.View,
-                _tokenOffsetXBuffer.View,
-                _tokenOffsetYBuffer.View,
-                _sharedOffsetXBuffer.View,
-                _sharedOffsetYBuffer.View,
-                _nailPropertiesBuffer.View,
-                _rowGeometryBuffer.View);
-
-            _integrateKernel(
-                _ballArray.Length,
-                _gpuConfig,
-                row,
-                _ballsBuffer.View,
-                _rowGeometryBuffer.View);
-        }
+        _sampleKernel(
+            1,
+            _gpuConfig,
+            allBalls.Count,
+            learningRate,
+            targetCentre,
+            _ballsBuffer.View,
+            _tokenOffsetXBuffer.View,
+            _tokenOffsetYBuffer.View,
+            _sharedOffsetXBuffer.View,
+            _sharedOffsetYBuffer.View,
+            _nailPropertiesBuffer.View,
+            _contactsBuffer.View,
+            _rowGeometryBuffer.View);
 
         _accelerator.Synchronize();
 
