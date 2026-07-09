@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 using PRM.Core.Engine;
 using PRM.Core.Models;
-using PRM.Viz;
+using PRM.Core.Viz;
 
 Console.OutputEncoding = Encoding.UTF8;
 
@@ -148,18 +148,16 @@ static async Task VisualiseSingle(VizServer server, DiamondGrid grid, VocabToken
     // Run the simulation WITH trace recording
     var trace = grid.SimulateWithTrace(inputIds);
 
-    // Stream each row to the browser with a small delay for animation effect
-    for (int r = 0; r < trace.RowFrames.Length; r++)
+    // Stream all frames instantly — client-side clock controls playback speed
+    for (int r = 0; r < trace.RowFrames.Length - 1; r++)   // skip last (post-grid) frame
     {
-        var balls  = trace.RowFrames[r];
+        var balls     = trace.RowFrames[r];
         var nailXs    = r < trace.NailBaseXs.Length      ? trace.NailBaseXs[r]      : [];
         var offXs     = r < trace.NailOffXs.Length       ? trace.NailOffXs[r]       : [];
         var nailRadii = r < trace.NailRadii.Length       ? trace.NailRadii[r]       : [];
         var nailRes   = r < trace.NailResistances.Length ? trace.NailResistances[r] : [];
-        int rowNum = r < trace.TotalRows ? r : trace.TotalRows;
-
+        int rowNum    = r < trace.TotalRows              ? r                        : trace.TotalRows;
         await server.SendFrameAsync(balls, nailXs, offXs, nailRadii, nailRes, rowNum);
-        await Task.Delay(30); // 30ms per row → smooth animation; browser can replay at any speed
     }
 
     // Compute prediction from final frame

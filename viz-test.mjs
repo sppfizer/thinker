@@ -1,9 +1,8 @@
 /**
  * viz-test.mjs — Automated verification of PRM.Viz.
- * Uses vendor puppeteer-core + system Chrome (same pattern as line-info-agent connectors).
- * Starts PRM.Viz internally with --no-browser, then connects Puppeteer.
- *
- * Usage:  node viz-test.mjs
+ * Uses vendor puppeteer-core + system Chrome.
+ * Starts PRM.Viz with --no-browser, connects Puppeteer, verifies
+ * that the setInterval clock drives the animation after 'result' arrives.
  */
 
 import { spawn }               from 'child_process';
@@ -17,15 +16,15 @@ const PUPPETEER_URL = new URL(
   '../../Copilot/Agents/line-info-agent/skills/_vendor/node_modules/puppeteer-core/lib/puppeteer/puppeteer-core.js',
   import.meta.url
 ).href;
-const TEST_PORT = 5060 + Math.floor(Math.random() * 40);
 const CHROME  = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const VIZ_DIR = path.join(__dir, 'src', 'PRM', 'PRM.Viz');
+const TEST_PORT = 5060 + Math.floor(Math.random() * 40);
 
 console.log('PRM Visualizer — automated test');
 console.log('================================');
 
-// ── 0. Start PRM.Viz with --no-browser ───────────────────────────────────────
-console.log('\n[0] Starting PRM.Viz --no-browser...');
+// ── 0. Start PRM.Viz ─────────────────────────────────────────────────────────
+console.log(`\n[0] Starting PRM.Viz --no-browser on port ${TEST_PORT}...`);
 const vizProc = spawn('dotnet', ['run', '-c', 'Debug', '--', '--port', String(TEST_PORT), '--no-browser', 'the', 'cat', 'sat'], {
   cwd: VIZ_DIR, stdio: ['ignore', 'pipe', 'pipe']
 });
@@ -33,17 +32,14 @@ let vizLog = '';
 vizProc.stdout.on('data', d => { vizLog += d; process.stdout.write('  viz> ' + d); });
 vizProc.stderr.on('data', d => { vizLog += d; });
 
-let vizPort = TEST_PORT;
 const portDeadline = Date.now() + 45_000;
 while (Date.now() < portDeadline) {
   await sleep(500);
-  const m = vizLog.match(/localhost:(\d+)/);
-  if (m) { vizPort = +m[1]; break; }
+  if (vizLog.includes(`localhost:${TEST_PORT}`)) break;
 }
-console.log(`\n  PRM.Viz on port ${vizPort}`);
 await sleep(500);
 
-const VIZ_URL = `http://localhost:${vizPort}/`;
+const VIZ_URL = `http://localhost:${TEST_PORT}/`;
 const puppeteer = (await import(PUPPETEER_URL)).default;
 const browser = await puppeteer.launch({
   headless: false, executablePath: CHROME,
@@ -53,12 +49,12 @@ const browser = await puppeteer.launch({
 
 let passed = 0, failed = 0;
 const ok   = msg => { console.log(`    ok  ${msg}`); passed++; };
-const fail = msg => { console.error(`    FAIL ${msg}`); failed++; };
+const fail = msg => { console.error(`  FAIL  ${msg}`); failed++; };
 
 try {
   const page = await browser.newPage();
 
-  // Intercept WS messages before page loads
+  // Intercept WS before page load
   await page.evaluateOnNewDocument(() => {
     const _WS = window.WebSocket;
     window.__vizMessages = [];
@@ -77,23 +73,32 @@ try {
   await page.goto(VIZ_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
   ok('HTTP 200, page loaded');
 
-  // 2. Wait for WS messages
-  console.log('\n[2] Waiting for WebSocket messages (up to 15s)...');
+  // 2. Wait for result message (all frames arrive before result)
+  console.log('\n[2] Waiting for WS messages (up to 15s)...');
   const dl = Date.now() + 15000;
   while (Date.now() < dl) {
-    await sleep(500);
+    await sleep(400);
     const t = await page.evaluate(() => (window.__vizMessages||[]).map(m=>m.type));
-    if (t.includes('config') && t.includes('frame') && t.includes('result')) break;
+    if (t.includes('result')) break;
   }
   const types = await page.evaluate(() => (window.__vizMessages||[]).map(m=>m.type));
   console.log(`    Messages: [${[...new Set(types)].join(', ')}] (${types.length} total)`);
-  types.includes('config') ? ok('config received')   : fail('no config — WS not connected');
-  types.includes('frame')  ? ok('frame(s) received') : fail('no frames — simulation not streaming');
-  types.includes('result') ? ok('result received')   : fail('no result after simulation');
+  types.includes('config') ? ok('config received')   : fail('no config');
+  types.includes('frame')  ? ok('frame(s) received') : fail('no frames');
+  types.includes('result') ? ok('result received — clock should start') : fail('no result');
 
-  // 3. Canvas content
-  console.log('\n[3] Checking canvas content...');
-  await sleep(1500);
+  // 3. Wait 3s for the setInterval clock to animate frames
+  console.log('\n[3] Waiting 3s for clock-driven animation...');
+  await sleep(3000);
+
+  const rowText = await page.evaluate(() => document.getElementById('rowCounter')?.textContent || '');
+  const rowMatch = rowText.match(/Row (\d+)/);
+  const rowNum   = rowMatch ? +rowMatch[1] : 0;
+  rowNum > 0
+    ? ok(`Animation clock advanced to ${rowText}`)
+    : fail(`Row counter still at '${rowText}' — clock did not run`);
+
+  // 4. Canvas content
   const bright = await page.evaluate(() => {
     const c = document.getElementById('c'); if (!c) return -1;
     const d = c.getContext('2d').getImageData(0,0,c.width,c.height).data;
@@ -102,7 +107,7 @@ try {
   });
   bright > 500 ? ok(`Canvas has ${bright} bright pixels`) : fail(`Canvas only ${bright} bright pixels`);
 
-  // 4. Screenshot
+  // 5. Screenshot
   await page.screenshot({ path: path.join(__dir, 'viz-screenshot.png') });
   ok('viz-screenshot.png saved');
 
@@ -114,4 +119,3 @@ try {
 console.log('\n================================');
 if (failed === 0) { console.log(`All ${passed} checks passed!`); }
 else { console.log(`${passed} passed, ${failed} failed`); process.exit(1); }
-

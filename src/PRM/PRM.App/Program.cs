@@ -4,6 +4,7 @@ using System.Text.Json;
 using PRM.Core.Engine;
 using PRM.Core.Models;
 using PRM.Core.Modes;
+using PRM.Core.Viz;
 
 // Ensure UTF-8 output on all platforms (fixes mojibake in Windows PowerShell console)
 Console.OutputEncoding = Encoding.UTF8;
@@ -192,11 +193,118 @@ switch (mode)
     }
 
     default:
-        Console.WriteLine($"Unknown mode '{mode}'. Use: train | test | tune | val | benchmark | optimize | autooptimize");
+        Console.WriteLine($"Unknown mode '{mode}'. Use: train | test | tune | val | benchmark | optimize | autooptimize | viz");
         break;
+
+    // ── VIZ ──────────────────────────────────────────────────────────────
+    case "viz":
+    {
+        if (File.Exists("prm_nails.bin")) { grid.LoadNails("prm_nails.bin"); Console.WriteLine("Nails loaded."); }
+
+        // Words to visualise: everything after "viz" on the command line
+        int[] vizIds;
+        if (modeArgs.Length > 1)
+        {
+            vizIds = modeArgs[1..]
+                .Select(t => vocab.FirstOrDefault(v => v.Text.Trim().Equals(t.Trim(), StringComparison.OrdinalIgnoreCase))?.Id ?? -1)
+                .Where(id => id >= 0)
+                .Take(4)
+                .ToArray();
+            if (vizIds.Length < 2)
+            {
+                Console.WriteLine("Need ≥ 2 known words. Using random sample from corpus.");
+                vizIds = GetRandomVizSample(VocabularyBuilder.Tokenise(corpus).Select(t => vocab.FirstOrDefault(v => v.Text == t)?.Id ?? -1).Where(id => id >= 0).ToArray());
+            }
+        }
+        else
+        {
+            vizIds = GetRandomVizSample(VocabularyBuilder.Tokenise(corpus).Select(t => vocab.FirstOrDefault(v => v.Text == t)?.Id ?? -1).Where(id => id >= 0).ToArray());
+        }
+
+        await using var server = new VizServer(vocab, 5050);
+        Console.WriteLine($"Visualizer at http://localhost:{server.Port}/");
+        Console.WriteLine("Opening browser…");
+        try { Process.Start(new ProcessStartInfo($"http://localhost:{server.Port}/") { UseShellExecute = true }); }
+        catch { Console.WriteLine("(Could not open browser — open the URL manually)"); }
+
+        using var exitCts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) => { e.Cancel = true; exitCts.Cancel(); };
+        Console.WriteLine("Press Ctrl+C to quit, or Enter to replay / type new words.\n");
+
+        while (!exitCts.IsCancellationRequested)
+        {
+            using var connCts = CancellationTokenSource.CreateLinkedTokenSource(exitCts.Token);
+            connCts.CancelAfter(TimeSpan.FromMinutes(10));
+            try { await server.WaitForClientAsync(connCts.Token); }
+            catch (OperationCanceledException) { break; }
+
+            var gridInfo = new DiamondGridInfo(grid.Config.TotalRows, grid.Config.WideningRows, grid.Config.EntryWidth, grid.Config.MaxWidth);
+            await server.SendConfigAsync(gridInfo);
+            await Task.Delay(200);
+            await VizStreamAsync(server, grid, vocab, vizIds);
+
+            // REPL
+            while (!exitCts.IsCancellationRequested)
+            {
+                Console.Write("tokens (or Enter to replay)> ");
+                string? line;
+                try { line = await Task.Run(() => Console.ReadLine(), exitCts.Token); }
+                catch (OperationCanceledException) { goto nextClient; }
+                if (line == null) break;
+                line = line.Trim();
+                if (line != "")
+                {
+                    var newIds = VocabularyBuilder.Tokenise(line)
+                        .Select(t => vocab.FirstOrDefault(v => v.Text.Trim().Equals(t.Trim(), StringComparison.OrdinalIgnoreCase))?.Id ?? -1)
+                        .Where(id => id >= 0).Take(4).ToArray();
+                    if (newIds.Length < 2) { Console.WriteLine("  Need ≥ 2 known words."); continue; }
+                    vizIds = newIds;
+                }
+                await VizStreamAsync(server, grid, vocab, vizIds);
+            }
+            nextClient:;
+        }
+        break;
+    }
 }
 
 Console.WriteLine("\nDone.");
+
+// ── Viz helpers ───────────────────────────────────────────────────────────────
+
+static async Task VizStreamAsync(VizServer server, DiamondGrid grid, VocabToken[] vocab, int[] tokenIds)
+{
+    string[] labels = tokenIds.Select(id => vocab[id].Text.Trim()).ToArray();
+    await server.SendClearAsync(labels);
+    await Task.Delay(80);
+
+    var trace = grid.SimulateWithTrace(tokenIds);
+
+    // Stream all frames instantly — the browser clock controls playback speed
+    for (int r = 0; r < trace.RowFrames.Length - 1; r++)   // skip last (post-grid) frame
+    {
+        var balls     = trace.RowFrames[r];
+        var nailXs    = r < trace.NailBaseXs.Length      ? trace.NailBaseXs[r]      : [];
+        var offXs     = r < trace.NailOffXs.Length       ? trace.NailOffXs[r]       : [];
+        var nailRadii = r < trace.NailRadii.Length       ? trace.NailRadii[r]       : [];
+        var nailRes   = r < trace.NailResistances.Length ? trace.NailResistances[r] : [];
+        int rowNum    = r < trace.TotalRows              ? r                        : trace.TotalRows;
+        await server.SendFrameAsync(balls, nailXs, offXs, nailRadii, nailRes, rowNum);
+    }
+
+    var (predicted, _) = grid.Predict(tokenIds);
+    string predLabel   = predicted >= 0 && predicted < vocab.Length ? vocab[predicted].Text.Trim() : "?";
+    await server.SendResultAsync(predLabel, target: null, correct: false);
+    Console.WriteLine($"[viz] [{string.Join(", ", labels)}] → \"{predLabel}\"");
+}
+
+static int[] GetRandomVizSample(int[] tokenIds)
+{
+    if (tokenIds.Length < 3) return tokenIds;
+    var rng = new Random();
+    int start = rng.Next(0, tokenIds.Length - 3);
+    return tokenIds[start..(start + 3)];
+}
 
 static string LoadCorpus(string? filename = null)
 {
