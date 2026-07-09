@@ -62,7 +62,11 @@ public sealed class GpuTrainingMode
             {
                 yield return RunGpuEpoch(dataset, epoch, lr, onStep, sessions);
                 lr *= LrDecayPerEpoch;
+                foreach (var session in sessions.Values)
+                    session.FlushOffsetsToGrid();
                 _router.DecayNailStiffness(0.02f);
+                foreach (var session in sessions.Values)
+                    session.RefreshNailPropertiesFromGrid();
             }
         }
         finally

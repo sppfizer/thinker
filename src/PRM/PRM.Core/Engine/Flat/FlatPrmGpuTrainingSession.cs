@@ -81,7 +81,18 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>,
         ArrayView1D<int, Stride1D.Dense>,
         ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense>> _sampleKernel;
+    private readonly Action<
+        Index1D,
+        FlatPrmGpuKernelConfig,
+        int,
+        int,
+        float,
+        float,
+        ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
+        ArrayView1D<int, Stride1D.Dense>,
+        ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>> _postAdjustKernel;
     private bool _offsetsDirty;
+    private bool _nailsDirty;
 
     public string RunMessage => _run.Message;
 
@@ -144,6 +155,7 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         _sharedOffsetXBuffer.CopyFromCPU(FlatPrmArrayPacking.Flatten(sharedOffX));
         _sharedOffsetYBuffer.CopyFromCPU(FlatPrmArrayPacking.Flatten(sharedOffY));
         _rowGeometryBuffer.CopyFromCPU(PackGeometry(_geometry));
+        RefreshNailPropertiesFromGrid();
 
         _deflectKernel = _accelerator.LoadAutoGroupedStreamKernel<
             Index1D,
@@ -203,6 +215,18 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
             ArrayView1D<int, Stride1D.Dense>,
             ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense>>(
                 FlatPrmGpuKernels.RunTrainingSampleRows);
+
+        _postAdjustKernel = _accelerator.LoadAutoGroupedStreamKernel<
+            Index1D,
+            FlatPrmGpuKernelConfig,
+            int,
+            int,
+            float,
+            float,
+            ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense>,
+            ArrayView1D<int, Stride1D.Dense>,
+            ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>>(
+                FlatPrmGpuKernels.ApplyPostTrainingNailAdjustment);
     }
 
     public FlatPrmGpuTrainingSampleResult TrainSample(
@@ -216,11 +240,9 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
 
         PackBallStates(allBalls);
         Array.Fill(_contactArray, -1);
-        RefreshNailProperties();
 
         _ballsBuffer.CopyFromCPU(_ballArray);
         _contactsBuffer.CopyFromCPU(_contactArray);
-        _nailPropertiesBuffer.CopyFromCPU(_nailPropertiesArray);
 
         float targetCentre = _grid.SlotCentreForFlatTraining(targetTokenId);
         _sampleKernel(
@@ -247,34 +269,71 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         var survivors = BuildSurvivorBalls(_ballArray.AsSpan(0, allBalls.Count), _contactArray, _maxBalls, _config.TotalRows);
         var (predicted, confidence) = _grid.ScoreFlatTraining(survivors, allBalls);
         bool correct = predicted == targetTokenId;
-        _grid.ApplyFlatPostTrainingAdjustment(survivors, targetCentre, learningRate, correct);
+        _postAdjustKernel(
+            1,
+            _gpuConfig,
+            allBalls.Count,
+            correct ? 1 : 0,
+            targetCentre,
+            learningRate,
+            _ballsBuffer.View,
+            _contactsBuffer.View,
+            _nailPropertiesBuffer.View);
+        _nailsDirty = true;
 
         return new FlatPrmGpuTrainingSampleResult(predicted, correct, confidence, _run);
     }
 
     public void FlushOffsetsToGrid()
     {
-        if (!_offsetsDirty)
+        if (!_offsetsDirty && !_nailsDirty)
             return;
 
-        var tokenOffX = new float[_tokenRows * _tokenColumns * _tokenDepth];
-        var tokenOffY = new float[_tokenRows * _tokenColumns * _tokenDepth];
-        var sharedOffX = new float[_sharedRows * _sharedColumns * _sharedDepth];
-        var sharedOffY = new float[_sharedRows * _sharedColumns * _sharedDepth];
+        if (_offsetsDirty)
+        {
+            var tokenOffX = new float[_tokenRows * _tokenColumns * _tokenDepth];
+            var tokenOffY = new float[_tokenRows * _tokenColumns * _tokenDepth];
+            var sharedOffX = new float[_sharedRows * _sharedColumns * _sharedDepth];
+            var sharedOffY = new float[_sharedRows * _sharedColumns * _sharedDepth];
 
-        _tokenOffsetXBuffer.CopyToCPU(tokenOffX);
-        _tokenOffsetYBuffer.CopyToCPU(tokenOffY);
-        _sharedOffsetXBuffer.CopyToCPU(sharedOffX);
-        _sharedOffsetYBuffer.CopyToCPU(sharedOffY);
+            _tokenOffsetXBuffer.CopyToCPU(tokenOffX);
+            _tokenOffsetYBuffer.CopyToCPU(tokenOffY);
+            _sharedOffsetXBuffer.CopyToCPU(sharedOffX);
+            _sharedOffsetYBuffer.CopyToCPU(sharedOffY);
 
-        _grid.Simulator.SetTokenOffsets(
-            FlatPrmArrayPacking.Unflatten(tokenOffX, _tokenRows, _tokenColumns, _tokenDepth),
-            FlatPrmArrayPacking.Unflatten(tokenOffY, _tokenRows, _tokenColumns, _tokenDepth));
-        _grid.Simulator.SetSharedOffsets(
-            FlatPrmArrayPacking.Unflatten(sharedOffX, _sharedRows, _sharedColumns, _sharedDepth),
-            FlatPrmArrayPacking.Unflatten(sharedOffY, _sharedRows, _sharedColumns, _sharedDepth));
+            _grid.Simulator.SetTokenOffsets(
+                FlatPrmArrayPacking.Unflatten(tokenOffX, _tokenRows, _tokenColumns, _tokenDepth),
+                FlatPrmArrayPacking.Unflatten(tokenOffY, _tokenRows, _tokenColumns, _tokenDepth));
+            _grid.Simulator.SetSharedOffsets(
+                FlatPrmArrayPacking.Unflatten(sharedOffX, _sharedRows, _sharedColumns, _sharedDepth),
+                FlatPrmArrayPacking.Unflatten(sharedOffY, _sharedRows, _sharedColumns, _sharedDepth));
+        }
+
+        if (_nailsDirty)
+        {
+            _nailPropertiesBuffer.CopyToCPU(_nailPropertiesArray);
+            for (int row = 0; row < _config.TotalRows; row++)
+            for (int col = 0; col < _config.MaxColumns; col++)
+            {
+                int index = row * _config.MaxColumns + col;
+                var props = _nailPropertiesArray[index];
+                var nail = _grid.Nails[row, col];
+                nail.Radius = props.Radius;
+                nail.Resistance = props.Resistance;
+                nail.Density = props.Density;
+                _grid.Nails[row, col] = nail;
+            }
+        }
 
         _offsetsDirty = false;
+        _nailsDirty = false;
+    }
+
+    public void RefreshNailPropertiesFromGrid()
+    {
+        RefreshNailProperties();
+        _nailPropertiesBuffer.CopyFromCPU(_nailPropertiesArray);
+        _nailsDirty = false;
     }
 
     public void Dispose()

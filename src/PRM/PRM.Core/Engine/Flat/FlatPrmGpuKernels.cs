@@ -866,6 +866,106 @@ internal static class FlatPrmGpuKernels
         }
     }
 
+    public static void ApplyPostTrainingNailAdjustment(
+        Index1D index,
+        FlatPrmGpuKernelConfig config,
+        int ballCount,
+        int correct,
+        float targetCentre,
+        float learningRate,
+        ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense> balls,
+        ArrayView1D<int, Stride1D.Dense> contactColumns,
+        ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense> nailProperties)
+    {
+        if (index != 0 || learningRate <= 0f)
+            return;
+
+        int activeBallCount = ballCount;
+        if (activeBallCount < 0) activeBallCount = 0;
+        if (activeBallCount > balls.IntLength) activeBallCount = balls.IntLength;
+
+        if (correct != 0)
+        {
+            int minContacts = 2147483647;
+            int focusCount = 0;
+            float massSum = 0f;
+            for (int i = 0; i < activeBallCount; i++)
+            {
+                FlatPrmGpuBallState state = balls[i];
+                if (!IsReinforceCandidate(config, state, targetCentre))
+                    continue;
+
+                int contactCount = CountContacts(config, balls.IntLength, i, contactColumns);
+                if (contactCount < minContacts)
+                {
+                    minContacts = contactCount;
+                    focusCount = 1;
+                    massSum = XMath.Sqrt(XMath.Max(state.Mass, 0.01f));
+                }
+                else if (contactCount == minContacts)
+                {
+                    focusCount++;
+                    massSum += XMath.Sqrt(XMath.Max(state.Mass, 0.01f));
+                }
+            }
+
+            if (focusCount <= 0)
+                return;
+
+            float boost = learningRate * (massSum / focusCount) * 0.05f;
+            for (int i = 0; i < activeBallCount; i++)
+            {
+                FlatPrmGpuBallState state = balls[i];
+                if (!IsReinforceCandidate(config, state, targetCentre))
+                    continue;
+                if (CountContacts(config, balls.IntLength, i, contactColumns) != minContacts)
+                    continue;
+
+                for (int row = 0; row < config.TotalRows; row++)
+                {
+                    int col = contactColumns[row * balls.IntLength + i];
+                    if (col < 0 || col >= config.MaxColumns)
+                        continue;
+                    if (HasPriorQualifiedContact(config, activeBallCount, balls.IntLength, i, row, col, 1, minContacts, targetCentre, balls, contactColumns))
+                        continue;
+
+                    int nailIndex = row * config.MaxColumns + col;
+                    FlatPrmGpuNailProperties nail = nailProperties[nailIndex];
+                    nailProperties[nailIndex] = new FlatPrmGpuNailProperties(
+                        nail.Radius,
+                        XMath.Clamp(nail.Resistance + boost, 0.05f, 2.5f),
+                        XMath.Clamp(nail.Density + boost * 0.5f, 0.1f, 4.0f));
+                }
+            }
+        }
+        else
+        {
+            float drop = learningRate * 0.05f;
+            for (int i = 0; i < activeBallCount; i++)
+            {
+                FlatPrmGpuBallState state = balls[i];
+                if (!IsSoftenCandidate(state))
+                    continue;
+
+                for (int row = 0; row < config.TotalRows; row++)
+                {
+                    int col = contactColumns[row * balls.IntLength + i];
+                    if (col < 0 || col >= config.MaxColumns)
+                        continue;
+                    if (HasPriorQualifiedContact(config, activeBallCount, balls.IntLength, i, row, col, 0, 0, targetCentre, balls, contactColumns))
+                        continue;
+
+                    int nailIndex = row * config.MaxColumns + col;
+                    FlatPrmGpuNailProperties nail = nailProperties[nailIndex];
+                    nailProperties[nailIndex] = new FlatPrmGpuNailProperties(
+                        nail.Radius,
+                        XMath.Clamp(nail.Resistance - drop, 0.05f, 2.5f),
+                        XMath.Clamp(nail.Density - drop * 0.5f, 0.1f, 4.0f));
+                }
+            }
+        }
+    }
+
     private static int TokenSlot(int vocabSize, int tokenId) =>
         tokenId >= 0 && tokenId < vocabSize ? tokenId : vocabSize;
 
@@ -897,6 +997,66 @@ internal static class FlatPrmGpuKernels
 
     private static float Sign(float value) =>
         value > 0f ? 1f : value < 0f ? -1f : 0f;
+
+    private static bool IsReinforceCandidate(
+        FlatPrmGpuKernelConfig config,
+        FlatPrmGpuBallState state,
+        float targetCentre) =>
+        state.Active != 0 &&
+        state.TokenId >= 0 &&
+        state.Stuck == 0 &&
+        XMath.Abs(state.Position - targetCentre) <= XMath.Max(config.NailSpacing * 0.6f, 0.5f);
+
+    private static bool IsSoftenCandidate(FlatPrmGpuBallState state) =>
+        state.Active != 0 &&
+        state.TokenId >= 0 &&
+        state.Stuck == 0;
+
+    private static int CountContacts(
+        FlatPrmGpuKernelConfig config,
+        int contactStride,
+        int ballIndex,
+        ArrayView1D<int, Stride1D.Dense> contactColumns)
+    {
+        int count = 0;
+        for (int row = 0; row < config.TotalRows; row++)
+        {
+            if (contactColumns[row * contactStride + ballIndex] >= 0)
+                count++;
+        }
+
+        return count;
+    }
+
+    private static bool HasPriorQualifiedContact(
+        FlatPrmGpuKernelConfig config,
+        int activeBallCount,
+        int contactStride,
+        int ballIndex,
+        int row,
+        int col,
+        int correct,
+        int minContacts,
+        float targetCentre,
+        ArrayView1D<FlatPrmGpuBallState, Stride1D.Dense> balls,
+        ArrayView1D<int, Stride1D.Dense> contactColumns)
+    {
+        for (int prior = 0; prior < ballIndex && prior < activeBallCount; prior++)
+        {
+            FlatPrmGpuBallState priorState = balls[prior];
+            bool qualifies = correct != 0
+                ? IsReinforceCandidate(config, priorState, targetCentre) &&
+                  CountContacts(config, contactStride, prior, contactColumns) == minContacts
+                : IsSoftenCandidate(priorState);
+            if (!qualifies)
+                continue;
+
+            if (contactColumns[row * contactStride + prior] == col)
+                return true;
+        }
+
+        return false;
+    }
 
     private static void ApplyOffsetUpdate(
         FlatPrmGpuKernelConfig config,
