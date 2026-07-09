@@ -1,11 +1,15 @@
 namespace PRM.Core.Viz;
 
 /// <summary>
-/// Generates the self-contained HTML/JS visualizer page.
-/// Animation is driven by a client-side setInterval clock — completely
-/// decoupled from WebSocket delivery speed.
-/// All frames are buffered first; the clock starts once the 'result'
-/// message arrives (full trace received).
+/// PRM Ball Visualizer — Galton-board style.
+///
+/// Physical animation per row:
+///   Phase 0 (frac 0.00 → 0.45): ball falls STRAIGHT DOWN, x constant
+///   Phase 1 (frac 0.45 → 0.55): ball AT nail row — nearest nail pulses/glows
+///   Phase 2 (frac 0.55 → 1.00): ball deflects LEFT or RIGHT, falls to next row
+///
+/// This mirrors the actual model: nails deflect balls; the deflection direction
+/// (sign of ox) is learned during training.
 /// </summary>
 internal static class HtmlPage
 {
@@ -16,53 +20,50 @@ internal static class HtmlPage
 <meta charset="utf-8"/>
 <title>PRM — Ball Visualizer</title>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body   { background: #0f1526; color: #c8d4ff; font-family: 'Segoe UI', sans-serif;
-           overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
-  canvas { flex: 1; display: block; }
+  *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+  body   { background:#0d1120; color:#c8d4ff; font-family:'Segoe UI',sans-serif;
+           overflow:hidden; height:100vh; display:flex; flex-direction:column; }
+  canvas { flex:1; display:block; }
 
-  #topbar { display: flex; align-items: center; gap: 16px; padding: 6px 14px;
-            background: rgba(15,20,45,0.95); border-bottom: 1px solid #2a2a6a; flex-shrink: 0; }
-  #topbar h1 { font-size: 14px; font-weight: 600; color: #99aaff; white-space: nowrap; }
-  #inputLabel { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: 2px; }
-  #predLabel  { font-size: 14px; padding: 3px 10px; border-radius: 20px;
-                background: rgba(80,80,200,0.35); border: 1px solid #4a4ab0; }
-  #predLabel.correct { background: rgba(0,180,100,0.35); border-color: #00cc66; color: #00ff88; }
-  #predLabel.wrong   { background: rgba(200,50,50,0.35);  border-color: #cc3333; color: #ff6666; }
-  #status { margin-left: auto; font-size: 11px; color: #6677aa; }
+  #topbar { display:flex; align-items:center; gap:14px; padding:5px 14px;
+            background:rgba(12,16,40,0.96); border-bottom:1px solid #252570; flex-shrink:0; }
+  #topbar h1 { font-size:13px; font-weight:600; color:#8899ee; white-space:nowrap; }
+  #inputLabel { font-size:17px; font-weight:700; color:#fff; letter-spacing:2px; }
+  #predLabel  { font-size:13px; padding:3px 10px; border-radius:18px;
+                background:rgba(70,70,190,0.35); border:1px solid #4040aa; }
+  #predLabel.correct { background:rgba(0,170,90,0.38); border-color:#00bb60; color:#00ff88; }
+  #predLabel.wrong   { background:rgba(190,45,45,0.38); border-color:#bb2222; color:#ff5555; }
+  #status { margin-left:auto; font-size:11px; color:#556688; }
 
-  #controls { display: flex; align-items: center; gap: 10px; padding: 6px 14px;
-              background: rgba(15,20,45,0.95); border-top: 1px solid #2a2a6a; flex-shrink: 0; }
-  button { background: #1e2466; color: #b8ccff; border: 1px solid #4040a0; padding: 4px 12px;
-           border-radius: 4px; cursor: pointer; font-size: 12px; transition: background .15s; }
-  button:hover { background: #2a3280; }
-  button.active { background: #3838c0; border-color: #7070ee; color: #fff; }
-  label  { font-size: 11px; color: #8899bb; display: flex; align-items: center; gap: 4px; }
-  input[type=range] { width: 110px; accent-color: #7070ee; }
-  #rowCounter { font-size: 12px; color: #7090bb; min-width: 80px; }
-  #legend { display: flex; gap: 10px; margin-left: auto; }
-  .leg-item { font-size: 11px; display: flex; align-items: center; gap: 4px; }
-  .leg-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  #controls { display:flex; align-items:center; gap:10px; padding:5px 14px;
+              background:rgba(12,16,40,0.96); border-top:1px solid #252570; flex-shrink:0; }
+  button { background:#182060; color:#aabbff; border:1px solid #3535aa; padding:4px 12px;
+           border-radius:4px; cursor:pointer; font-size:12px; transition:background .15s; }
+  button:hover { background:#253080; }
+  button.active { background:#3030bb; border-color:#6060ee; color:#fff; }
+  label  { font-size:11px; color:#7788aa; display:flex; align-items:center; gap:4px; }
+  input[type=range] { width:100px; accent-color:#6060ee; }
+  #rowCounter { font-size:12px; color:#6080aa; min-width:85px; }
+  #legend { display:flex; gap:8px; margin-left:auto; }
+  .leg-item { font-size:11px; display:flex; align-items:center; gap:4px; }
+  .leg-dot  { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
 </style>
 </head>
 <body>
-
 <div id="topbar">
   <h1>PRM Ball Visualizer</h1>
   <div id="inputLabel">—</div>
   <div id="predLabel">—</div>
   <div id="status">Connecting…</div>
 </div>
-
 <canvas id="c"></canvas>
-
 <div id="controls">
   <button id="btnPlay">▶ Play</button>
-  <button id="btnStep">▶| Step</button>
+  <button id="btnStep">⏭ Step</button>
   <button id="btnReset">↩ Reset</button>
-  <label>Speed <input id="speedSlider" type="range" min="1" max="30" value="8"/></label>
+  <label>Speed <input id="spd" type="range" min="1" max="20" value="5"/></label>
   <div id="rowCounter">Row — / —</div>
-  <label><input id="chkNails" type="checkbox" checked/> Show nails</label>
+  <label><input id="chkNails"  type="checkbox" checked/> Nails</label>
   <label><input id="chkTrails" type="checkbox" checked/> Trails</label>
   <div id="legend"></div>
 </div>
@@ -70,386 +71,407 @@ internal static class HtmlPage
 <script>
 "use strict";
 
-// ─── State ────────────────────────────────────────────────────────────────────
-let cfg    = null;    // config from server
-let frames = [];      // all buffered row-frames
-let curRow = 0;       // current display index into frames[]
-let ticker = null;    // setInterval handle — THE animation clock
+// ── Constants ─────────────────────────────────────────────────────────────────
+// Sub-steps per row. Each tick advances 1/SUBSTEPS of a row.
+// At speed=5 → 200ms/tick → 6 ticks/row = 1.2s per row → full 16 rows ≈ 20s
+const SUBSTEPS = 6;
 
-const ballColors = ['#ff6b6b','#4ecdc4','#f7c948','#bb8fce','#ff9a5c','#74b9ff','#a29bfe'];
-const tokenColorMap = {};
-function tokenColor(id) {
-  if (id < 0) return '#ffffff44';
-  if (tokenColorMap[id] === undefined) {
-    const idx = Object.keys(tokenColorMap).length % ballColors.length;
-    tokenColorMap[id] = ballColors[idx];
-  }
-  return tokenColorMap[id];
+// ── State ─────────────────────────────────────────────────────────────────────
+let cfg    = null;
+let frames = [];       // row-frames from server
+let trails = {};       // tokenId → [{x,y}] for trail drawing
+let curStep = 0.0;     // float: floor=row-index, frac=phase within that row
+let ticker  = null;
+
+// ── Colors ────────────────────────────────────────────────────────────────────
+const BALL_PALETTE = ['#ff5f5f','#3ecfc4','#f5c542','#bb7ee0','#ff955a','#62aaff','#9a8afe'];
+const colorMap = {};
+function ballColor(id) {
+  if (id < 0) return '#ffffff33';
+  if (!colorMap[id]) colorMap[id] = BALL_PALETTE[Object.keys(colorMap).length % BALL_PALETTE.length];
+  return colorMap[id];
 }
 
-// ─── Canvas ───────────────────────────────────────────────────────────────────
-const canvas = document.getElementById('c');
-const ctx    = canvas.getContext('2d');
-function resize() { canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight; draw(); }
+// ── Canvas ────────────────────────────────────────────────────────────────────
+const C = document.getElementById('c');
+const X = C.getContext('2d');
+function resize() { C.width = C.offsetWidth; C.height = C.offsetHeight; draw(); }
 window.addEventListener('resize', resize);
-setTimeout(resize, 50);
+setTimeout(resize, 60);
 
-// ─── Animation clock ──────────────────────────────────────────────────────────
-function getInterval() { return 1000 / Math.max(1, +document.getElementById('speedSlider').value); }
+// ── Layout constants ──────────────────────────────────────────────────────────
+const MX = 55, MY = 20;
+function SW() { return C.width  - MX*2; }
+function SH() { return C.height - MY*2 - 50; }
+
+function gridW(rowF) {
+  if (!cfg) return 1;
+  const { entryWidth:ew, maxWidth:mw, wideningRows:wr, totalRows:tr } = cfg;
+  const cr = (mw - ew) / Math.max(tr - wr, 1);
+  return rowF <= wr
+    ? ew + rowF * (mw - ew) / Math.max(wr, 1)
+    : mw - (rowF - wr) * cr;
+}
+
+function toScreen(gx, rowF) {
+  return {
+    x: MX + (gx / cfg.maxWidth) * SW(),
+    y: MY + (rowF / cfg.totalRows) * SH()
+  };
+}
+
+// ── Physical ball position — Galton-board path ─────────────────────────────
+// frac 0.00–0.45 → straight down (x fixed at x0)
+// frac 0.45–0.55 → at nail row  (x begins to shift)
+// frac 0.55–1.00 → deflected path to x1
+function easeOut(t) { return 1 - (1-t)*(1-t); }
+
+function ballPos(b0, b1, frac) {
+  const x0 = b0.Position, x1 = b1 ? b1.Position : x0;
+  const r0 = b0.row ?? 0,  r1 = b1 ? (b1.row ?? r0+1) : r0+1;
+  let x, rowF;
+
+  if (frac <= 0.45) {
+    x    = x0;
+    rowF = r0 + (frac / 0.45) * 0.48;          // falls to 48% of row gap
+  } else if (frac <= 0.55) {
+    const t = (frac - 0.45) / 0.10;
+    x    = x0 + (x1 - x0) * t * 0.35;          // slight start of deflection
+    rowF = r0 + 0.48 + t * 0.04;               // at nail level
+  } else {
+    const t = easeOut((frac - 0.55) / 0.45);
+    x    = x0 + (x1 - x0) * (0.35 + 0.65*t);  // deflect to final position
+    rowF = r0 + 0.52 + ((frac - 0.55)/0.45) * 0.48;
+  }
+  return { x, rowF };
+}
+
+// ── Get current interpolated balls for drawing ────────────────────────────
+function getCurBalls() {
+  if (!frames.length) return [];
+  const ri   = Math.min(Math.floor(curStep), frames.length - 1);
+  const frac = curStep - Math.floor(curStep);
+  const f0   = frames[ri];
+  const f1   = frames[Math.min(ri+1, frames.length-1)];
+  return (f0.balls || [])
+    .filter(b => b.TokenId >= 0)
+    .map(b => {
+      const b1 = f1?.balls?.find(b2 => b2.TokenId === b.TokenId);
+      const pos = ballPos(
+        { Position: b.Position, row: f0.row },
+        b1 ? { Position: b1.Position, row: f1.row } : null,
+        frac
+      );
+      return { TokenId: b.TokenId, Mass: b.Mass, ...pos };
+    });
+}
+
+// ── Which nail is nearest to a ball at the approach phase ─────────────────
+function nearestNailIdx(ballX, nails, pxPerUnit) {
+  let best = -1, bestDist = Infinity;
+  nails.forEach((n, i) => {
+    const d = Math.abs(ballX - n.x);
+    if (d < bestDist) { bestDist = d; best = i; }
+  });
+  return best;
+}
+
+// ── Trails (historical path) ──────────────────────────────────────────────
+function updateTrails() {
+  const ri   = Math.min(Math.floor(curStep), frames.length - 1);
+  const frac = curStep - Math.floor(curStep);
+  getCurBalls().forEach(b => {
+    if (!trails[b.TokenId]) trails[b.TokenId] = [];
+    const arr = trails[b.TokenId];
+    const s   = toScreen(b.x, b.rowF ?? b.rowFloat);
+    const last = arr[arr.length - 1];
+    if (!last || Math.hypot(s.x-last.x, s.y-last.y) > 1) arr.push({ x: s.x, y: s.y });
+  });
+}
+
+// ── Clock ────────────────────────────────────────────────────────────────────
+function interval() { return 1000 / Math.max(1, +document.getElementById('spd').value); }
 
 function stopClock() {
-  if (ticker !== null) { clearInterval(ticker); ticker = null; }
+  if (ticker) { clearInterval(ticker); ticker = null; }
   document.getElementById('btnPlay').textContent = '▶ Play';
   document.getElementById('btnPlay').classList.remove('active');
 }
-
 function startClock() {
   stopClock();
-  if (frames.length === 0) return;
+  if (frames.length < 2) return;
   ticker = setInterval(() => {
-    if (curRow < frames.length - 1) {
-      curRow++;
-      draw();
-      updateRowCounter();
-    } else {
-      stopClock();
-    }
-  }, getInterval());
+    curStep += 1/SUBSTEPS;
+    if (curStep >= frames.length - 1) { curStep = frames.length - 1; stopClock(); }
+    updateTrails();
+    draw();
+    updateRowLbl();
+  }, interval());
   document.getElementById('btnPlay').textContent = '⏸ Pause';
   document.getElementById('btnPlay').classList.add('active');
 }
 
-document.getElementById('speedSlider').addEventListener('input', () => {
-  if (ticker !== null) startClock(); // restart with new speed
-});
-
-// ─── Controls ─────────────────────────────────────────────────────────────────
-document.getElementById('btnPlay').addEventListener('click', function() {
-  if (ticker !== null) { stopClock(); }
-  else { if (curRow >= frames.length - 1) curRow = 0; startClock(); }
+document.getElementById('spd').addEventListener('input', () => { if (ticker) startClock(); });
+document.getElementById('btnPlay').addEventListener('click', () => {
+  if (ticker) stopClock();
+  else { if (curStep >= frames.length-1) { curStep=0; trails={}; } startClock(); }
 });
 document.getElementById('btnStep').addEventListener('click', () => {
   stopClock();
-  if (curRow < frames.length - 1) { curRow++; draw(); updateRowCounter(); }
+  curStep = Math.min(Math.ceil(curStep + 0.001), frames.length-1);
+  updateTrails(); draw(); updateRowLbl();
 });
 document.getElementById('btnReset').addEventListener('click', () => {
-  stopClock(); curRow = 0; draw(); updateRowCounter();
+  stopClock(); curStep=0; trails={}; draw(); updateRowLbl();
 });
 document.getElementById('chkNails').addEventListener('change',  draw);
 document.getElementById('chkTrails').addEventListener('change', draw);
 
-// ─── WebSocket ────────────────────────────────────────────────────────────────
+function updateRowLbl() {
+  const f = frames[Math.min(Math.floor(curStep), frames.length-1)];
+  document.getElementById('rowCounter').textContent =
+    f ? `Row ${f.row} / ${cfg?.totalRows ?? '?'}` : 'Row — / —';
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
 let ws;
 function connect() {
-  ws = new WebSocket('ws://localhost:{{port}}/ws');
-  ws.onopen    = () => { document.getElementById('status').textContent = 'Connected ✓'; };
+  ws = new WebSocket(`ws://localhost:{{port}}/ws`);
+  ws.onopen    = () => document.getElementById('status').textContent = 'Connected ✓';
   ws.onclose   = () => { document.getElementById('status').textContent = 'Reconnecting…'; setTimeout(connect, 1500); };
   ws.onerror   = () => ws.close();
-  ws.onmessage = (e) => handle(JSON.parse(e.data));
+  ws.onmessage = e  => handle(JSON.parse(e.data));
 }
 
 function handle(msg) {
   switch (msg.type) {
     case 'config':
       cfg = msg;
-      Object.keys(tokenColorMap).forEach(k => delete tokenColorMap[k]);
+      Object.keys(colorMap).forEach(k => delete colorMap[k]);
       break;
 
     case 'clear':
-      stopClock();
-      frames = [];
-      curRow = 0;
+      stopClock(); frames=[]; trails={}; curStep=0;
       document.getElementById('inputLabel').textContent = msg.tokens.join(' · ');
       document.getElementById('predLabel').textContent  = '—';
       document.getElementById('predLabel').className    = '';
       msg.tokens.forEach(t => {
-        if (cfg) { const v = cfg.vocab.find(v => v.Text.trim() === t.trim()); if (v) tokenColor(v.Id); }
+        if (cfg) { const v = cfg.vocab.find(v=>v.Text.trim()===t.trim()); if(v) ballColor(v.Id); }
       });
-      buildLegend(msg.tokens);
-      updateRowCounter();
-      draw();
+      buildLegend(msg.tokens); updateRowLbl(); draw();
       break;
 
     case 'frame':
       frames.push(msg);
       break;
 
-    case 'result':
-      // Show result label — do NOT touch curRow; the clock plays from row 0
-      const pred = document.getElementById('predLabel');
-      pred.textContent = '→ ' + msg.predicted + (msg.target ? ' (target: ' + msg.target + ')' : '');
-      pred.className   = msg.correct ? 'correct' : 'wrong';
-      // Start clock now that all frames are buffered
-      curRow = 0;
-      draw();
-      updateRowCounter();
+    case 'result': {
+      const el = document.getElementById('predLabel');
+      el.textContent = '→ ' + msg.predicted + (msg.target ? ' (target: '+msg.target+')' : '');
+      el.className   = msg.correct ? 'correct' : 'wrong';
+      curStep=0; trails={}; draw(); updateRowLbl();
       startClock();
       break;
+    }
   }
 }
 
-// ─── Legend ───────────────────────────────────────────────────────────────────
 function buildLegend(tokens) {
-  const el = document.getElementById('legend');
-  el.innerHTML = '';
-  tokens.forEach(t => {
-    const v = cfg && cfg.vocab.find(v => v.Text.trim() === t.trim());
-    const col = tokenColor(v ? v.Id : -1);
-    el.innerHTML += `<div class="leg-item"><div class="leg-dot" style="background:${col}"></div>${t}</div>`;
-  });
+  document.getElementById('legend').innerHTML = tokens.map(t => {
+    const v = cfg?.vocab?.find(v=>v.Text.trim()===t.trim());
+    return `<div class="leg-item"><div class="leg-dot" style="background:${ballColor(v?.Id??-1)}"></div>${t}</div>`;
+  }).join('');
 }
 
-// ─── Row counter ──────────────────────────────────────────────────────────────
-function updateRowCounter() {
-  const f = frames[curRow];
-  document.getElementById('rowCounter').textContent =
-    f ? `Row ${f.row} / ${cfg ? cfg.totalRows : '?'}` : `Row — / —`;
-}
-
-// ─── Coordinate helpers ───────────────────────────────────────────────────────
-const MX = 60, MY = 24;
-function screenW() { return canvas.width  - MX * 2; }
-function screenH() { return canvas.height - MY * 2 - 50; }
-
-function gridWidth(row) {
-  if (!cfg) return 1;
-  const { entryWidth, maxWidth, wideningRows, totalRows } = cfg;
-  const nRows = totalRows - wideningRows;
-  const cr    = (maxWidth - entryWidth) / Math.max(nRows, 1);
-  return row <= wideningRows
-    ? entryWidth + row * (maxWidth - entryWidth) / Math.max(wideningRows, 1)
-    : maxWidth - (row - wideningRows) * cr;
-}
-
-function toScreen(gridX, row) {
-  return {
-    x: MX + (gridX / cfg.maxWidth) * screenW(),
-    y: MY + (row   / cfg.totalRows) * screenH()
-  };
-}
-
-// ─── Drawing ──────────────────────────────────────────────────────────────────
+// ── DRAWING ───────────────────────────────────────────────────────────────────
 function draw() {
-  const W = canvas.width, H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
-  if (!cfg) {
-    ctx.fillStyle = '#445'; ctx.font = '16px Segoe UI';
-    ctx.fillText('Waiting for connection…', 40, 40); return;
-  }
+  X.clearRect(0, 0, C.width, C.height);
+  if (!cfg) { X.fillStyle='#334'; X.font='15px Segoe UI'; X.fillText('Waiting for data…',40,40); return; }
   drawDiamond();
   if (document.getElementById('chkNails').checked)  drawNails();
-  if (document.getElementById('chkTrails').checked) drawTrails();
+  if (document.getElementById('chkTrails').checked) drawTrailLines();
   drawBalls();
   drawSlots();
-  drawRowLine();
 }
 
 // ── Diamond background ────────────────────────────────────────────────────────
 function drawDiamond() {
-  ctx.beginPath();
-  for (let r = 0; r <= cfg.totalRows; r++) {
-    const gw = gridWidth(r), left = (cfg.maxWidth - gw) / 2;
-    const p  = toScreen(left, r);
-    r === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+  X.beginPath();
+  for (let r=0; r<=cfg.totalRows; r++) {
+    const gw=gridW(r), lx=(cfg.maxWidth-gw)/2;
+    const p=toScreen(lx,r); r===0 ? X.moveTo(p.x,p.y) : X.lineTo(p.x,p.y);
   }
-  for (let r = cfg.totalRows; r >= 0; r--) {
-    const gw = gridWidth(r), right = (cfg.maxWidth + gw) / 2;
-    ctx.lineTo(toScreen(right, r).x, toScreen(right, r).y);
+  for (let r=cfg.totalRows; r>=0; r--) {
+    const gw=gridW(r), rx=(cfg.maxWidth+gw)/2;
+    X.lineTo(toScreen(rx,r).x, toScreen(rx,r).y);
   }
-  ctx.closePath();
-  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  grad.addColorStop(0,   'rgba(60,75,190,0.18)');
-  grad.addColorStop(0.5, 'rgba(80,100,220,0.22)');
-  grad.addColorStop(1,   'rgba(45,60,160,0.15)');
-  ctx.fillStyle = grad; ctx.fill();
-  ctx.strokeStyle = '#3a40a0'; ctx.lineWidth = 2; ctx.stroke();
+  X.closePath();
+  const g=X.createLinearGradient(0,0,0,C.height);
+  g.addColorStop(0,  'rgba(50,65,175,0.17)');
+  g.addColorStop(0.5,'rgba(70,90,210,0.20)');
+  g.addColorStop(1,  'rgba(38,52,148,0.14)');
+  X.fillStyle=g; X.fill();
+  X.strokeStyle='#353598'; X.lineWidth=2; X.stroke();
 
-  // Divider
-  const dy = toScreen(0, cfg.wideningRows).y;
-  ctx.save(); ctx.setLineDash([5,4]);
-  ctx.strokeStyle = 'rgba(100,130,255,0.30)'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(0, dy); ctx.lineTo(canvas.width, dy); ctx.stroke();
-  ctx.restore();
-  ctx.fillStyle = 'rgba(100,130,255,0.55)'; ctx.font = '10px Segoe UI';
-  ctx.fillText('▼ THINKING', 4, dy - 5);
-  ctx.fillText('▼ SUMMARISING', 4, dy + 12);
+  // Phase divider
+  const dy=toScreen(0,cfg.wideningRows).y;
+  X.save(); X.setLineDash([5,4]);
+  X.strokeStyle='rgba(90,120,255,0.25)'; X.lineWidth=1;
+  X.beginPath(); X.moveTo(0,dy); X.lineTo(C.width,dy); X.stroke();
+  X.restore();
+  X.fillStyle='rgba(90,120,255,0.48)'; X.font='10px Segoe UI';
+  X.fillText('▼ THINKING',4,dy-4); X.fillText('▼ SUMMARISING',4,dy+12);
 }
 
 // ── Nail grid ─────────────────────────────────────────────────────────────────
 function drawNails() {
   if (!frames.length) return;
-  const curFrame = frames[curRow] || null;
-  const activeRow = curFrame ? curFrame.row : -1;
+  const ri     = Math.min(Math.floor(curStep), frames.length-1);
+  const frac   = curStep - Math.floor(curStep);
+  const curRow = frames[ri]?.row ?? ri;
+  const atNail = frac >= 0.35 && frac <= 0.75;  // ball is near nail level
 
-  // All rows faintly — the full nail grid
+  // Determine hit nails for current step
+  const hitSet = new Set();
+  if (atNail) {
+    const f   = frames[ri];
+    const nls = f?.nails ?? [];
+    (f?.balls ?? []).filter(b=>b.TokenId>=0).forEach(b => {
+      let best=-1, bd=Infinity;
+      nls.forEach((n,i)=>{ const d=Math.abs(b.Position-n.x); if(d<bd){bd=d;best=i;} });
+      if (best>=0) hitSet.add(best);
+    });
+  }
+
   frames.forEach(f => {
     if (!f.nails) return;
-    const isCur = f.row === activeRow;
-    f.nails.forEach(nail => {
+    const isActive = f.row === curRow;
+    f.nails.forEach((nail, ni) => {
       const p  = toScreen(nail.x, f.row);
-      if (p.x < 4 || p.x > canvas.width - 4) return;
-      const nr = isCur ? Math.max(4, Math.min(14, (nail.r ?? 0.5) * 14))
-                       : Math.max(2, Math.min(7,  (nail.r ?? 0.5) * 8));
-      if (isCur) {
-        // Bright current-row nail
-        const rs   = nail.rs ?? 0.5;
-        ctx.beginPath(); ctx.arc(p.x, p.y, nr, 0, Math.PI*2);
-        ctx.fillStyle   = `rgba(210,225,255,${(0.45 + rs*0.45).toFixed(2)})`;
-        ctx.strokeStyle = `rgba(170,195,255,${(0.50 + rs*0.35).toFixed(2)})`;
-        ctx.lineWidth   = 1.5 + rs; ctx.fill(); ctx.stroke();
-        // Deflection arrow
-        if (Math.abs(nail.ox) > 0.01) {
-          const al  = Math.min(22, 15 * Math.abs(nail.ox));
+      if (p.x < 4 || p.x > C.width-4) return;
+
+      if (isActive) {
+        const isHit = hitSet.has(ni);
+        const rs    = nail.rs ?? 0.5;
+        const baseR = Math.max(4, Math.min(13, (nail.r ?? 0.5) * 13));
+        const nr    = isHit ? baseR * 1.5 : baseR;
+
+        if (isHit) {
+          // Yellow burst glow — ball is interacting with this nail
+          const hit = ctx_radial(p.x, p.y, nr, nr*4, 'rgba(255,215,55,0.55)', 'rgba(255,215,55,0)');
+          X.beginPath(); X.arc(p.x, p.y, nr*4, 0, Math.PI*2); X.fillStyle=hit; X.fill();
+          X.beginPath(); X.arc(p.x, p.y, nr, 0, Math.PI*2);
+          X.fillStyle='rgba(255,225,80,0.92)'; X.strokeStyle='rgba(255,255,160,1)'; X.lineWidth=2; X.fill(); X.stroke();
+        } else {
+          // Normal active-row nail — bright white/blue
+          X.beginPath(); X.arc(p.x, p.y, nr, 0, Math.PI*2);
+          X.fillStyle  =`rgba(205,220,255,${(0.42+rs*0.48).toFixed(2)})`;
+          X.strokeStyle=`rgba(165,190,255,${(0.48+rs*0.36).toFixed(2)})`;
+          X.lineWidth=1.4+rs*0.4; X.fill(); X.stroke();
+        }
+
+        // Deflection arrow — shows learned direction
+        if (Math.abs(nail.ox) > 0.008) {
+          const al  = Math.min(22, 14 * Math.abs(nail.ox));
           const dir = Math.sign(nail.ox);
-          const col = dir > 0 ? '#ffdd44' : '#44ccff';
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + al*dir, p.y);
-          ctx.lineTo(p.x + (al-5)*dir, p.y - 3);
-          ctx.moveTo(p.x + al*dir, p.y);
-          ctx.lineTo(p.x + (al-5)*dir, p.y + 3);
-          ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+          const col = isHit ? '#ffe844' : (dir>0 ? '#ffcc44' : '#44ddff');
+          X.beginPath();
+          X.moveTo(p.x, p.y); X.lineTo(p.x+al*dir, p.y);
+          X.lineTo(p.x+(al-5)*dir, p.y-3);
+          X.moveTo(p.x+al*dir, p.y); X.lineTo(p.x+(al-5)*dir, p.y+3);
+          X.strokeStyle=col; X.lineWidth=isHit?2.5:1.8; X.stroke();
         }
       } else {
-        // Faint background nail
-        ctx.beginPath(); ctx.arc(p.x, p.y, nr, 0, Math.PI*2);
-        ctx.fillStyle   = 'rgba(150,165,230,0.40)';
-        ctx.strokeStyle = 'rgba(120,140,220,0.45)';
-        ctx.lineWidth   = 0.8; ctx.fill(); ctx.stroke();
+        // Background grid nail — subtle dot
+        const nr = Math.max(2, Math.min(6, (nail.r ?? 0.5) * 7));
+        X.beginPath(); X.arc(p.x, p.y, nr, 0, Math.PI*2);
+        X.fillStyle  ='rgba(140,158,225,0.35)';
+        X.strokeStyle='rgba(110,132,215,0.40)';
+        X.lineWidth=0.7; X.fill(); X.stroke();
       }
     });
   });
 }
 
+function ctx_radial(cx,cy,r0,r1,c0,c1) {
+  const g=X.createRadialGradient(cx,cy,r0,cx,cy,r1); g.addColorStop(0,c0); g.addColorStop(1,c1); return g;
+}
+
 // ── Trails ────────────────────────────────────────────────────────────────────
-function drawTrails() {
-  if (frames.length < 2 || curRow < 1) return;
-  const paths = {};
-  for (let ri = 0; ri <= curRow && ri < frames.length; ri++) {
-    const f = frames[ri]; if (!f) continue;
-    f.balls.forEach(b => {
-      if (b.TokenId < 0) return;
-      if (!paths[b.TokenId]) paths[b.TokenId] = [];
-      paths[b.TokenId].push({ x: b.Position, row: f.row });
-    });
-  }
-  Object.entries(paths).forEach(([id, pts]) => {
+function drawTrailLines() {
+  Object.entries(trails).forEach(([id, pts]) => {
     if (pts.length < 2) return;
-    ctx.beginPath();
-    pts.forEach((pt, i) => {
-      const s = toScreen(pt.x, pt.row);
-      i === 0 ? ctx.moveTo(s.x, s.y) : ctx.lineTo(s.x, s.y);
-    });
-    ctx.strokeStyle = tokenColor(+id) + '66';
-    ctx.lineWidth = 1.5; ctx.stroke();
+    X.beginPath();
+    pts.forEach((p,i) => i===0 ? X.moveTo(p.x,p.y) : X.lineTo(p.x,p.y));
+    X.strokeStyle = ballColor(+id) + '70';
+    X.lineWidth   = 1.8; X.stroke();
   });
 }
 
 // ── Balls ─────────────────────────────────────────────────────────────────────
 function drawBalls() {
-  if (!frames.length) return;
-  const frame = frames[curRow]; if (!frame) return;
-  frame.balls.forEach(b => {
-    if (b.TokenId < 0) return;
-    const p   = toScreen(b.Position, frame.row);
-    const r   = Math.max(10, Math.min(44, 10 + b.Mass * 34));
-    const col = tokenColor(b.TokenId);
+  getCurBalls().forEach(b => {
+    const p   = toScreen(b.x, b.rowFloat ?? b.rowF);
+    const r   = Math.max(10, Math.min(42, 10 + b.Mass * 32));
+    const col = ballColor(b.TokenId);
 
     // Glow
-    [r*3.2, r*2.0, r*1.3].forEach((gr, i) => {
-      const a  = ['15','30','60'][i];
-      const g2 = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, gr);
-      g2.addColorStop(0, col+a); g2.addColorStop(1, col+'00');
-      ctx.beginPath(); ctx.arc(p.x, p.y, gr, 0, Math.PI*2);
-      ctx.fillStyle = g2; ctx.fill();
+    [[r*3.0,'18'],[r*1.9,'32'],[r*1.25,'62']].forEach(([gr,a]) => {
+      const g=ctx_radial(p.x,p.y,0,gr,col+a,col+'00');
+      X.beginPath(); X.arc(p.x,p.y,gr,0,Math.PI*2); X.fillStyle=g; X.fill();
     });
 
-    // Solid ball
-    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI*2);
-    const bg = ctx.createRadialGradient(p.x - r*.3, p.y - r*.3, r*.08, p.x, p.y, r);
-    bg.addColorStop(0, '#ffffff'); bg.addColorStop(0.25, col); bg.addColorStop(1, col+'cc');
-    ctx.fillStyle = bg; ctx.strokeStyle = '#ffffff99'; ctx.lineWidth = 2;
-    ctx.fill(); ctx.stroke();
+    // Ball body
+    X.beginPath(); X.arc(p.x,p.y,r,0,Math.PI*2);
+    const bg=X.createRadialGradient(p.x-r*.3,p.y-r*.3,r*.07,p.x,p.y,r);
+    bg.addColorStop(0,'#fff'); bg.addColorStop(0.25,col); bg.addColorStop(1,col+'cc');
+    X.fillStyle=bg; X.strokeStyle='#ffffff88'; X.lineWidth=2; X.fill(); X.stroke();
 
     // Label
-    const label = (cfg.vocab[b.TokenId]?.Text ?? `#${b.TokenId}`).trim();
-    const fs = Math.max(9, Math.min(r - 2, 15));
-    ctx.font = `bold ${fs}px Segoe UI`;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.strokeStyle = '#000000bb'; ctx.lineWidth = 3;
-    ctx.strokeText(label.length > 8 ? label.slice(0,7)+'…' : label, p.x, p.y);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(label.length > 8 ? label.slice(0,7)+'…' : label, p.x, p.y);
-    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    const lbl = ((cfg?.vocab?.[b.TokenId]?.Text) ?? `#${b.TokenId}`).trim().slice(0,8);
+    const fs  = Math.max(9, Math.min(r-2, 15));
+    X.font=`bold ${fs}px Segoe UI`; X.textAlign='center'; X.textBaseline='middle';
+    X.strokeStyle='#000000aa'; X.lineWidth=3; X.strokeText(lbl,p.x,p.y);
+    X.fillStyle='#fff'; X.fillText(lbl,p.x,p.y);
+    X.textAlign='left'; X.textBaseline='alphabetic';
   });
 }
 
 // ── Output slots ──────────────────────────────────────────────────────────────
 function drawSlots() {
-  if (!cfg || !cfg.vocab || cfg.vocab.length === 0) return;
-  const totalSpan = cfg.vocab[cfg.vocab.length - 1].SlotRight;
-  if (!totalSpan || totalSpan <= 0) return;
-  const botY  = canvas.height - 50;
-  const labY  = canvas.height - 30;
-  const slotH = 12;
-  const W     = screenW();
-
-  ctx.fillStyle = 'rgba(15,18,50,0.80)';
-  ctx.fillRect(MX, botY - 2, W, slotH + 4);
-
-  const predId = getPredId();
+  if (!cfg?.vocab?.length) return;
+  const ts = cfg.vocab[cfg.vocab.length-1].SlotRight;
+  if (!ts || ts<=0) return;
+  const by=C.height-50, ly=C.height-30, sh=12, W=SW();
+  X.fillStyle='rgba(10,13,40,0.88)'; X.fillRect(MX,by-2,W,sh+4);
+  const pid = getPredId();
   cfg.vocab.forEach(v => {
-    if (v.SlotRight === undefined || v.SlotLeft === undefined) return;
-    const sx = MX + (v.SlotLeft  / totalSpan) * W;
-    const sw = Math.max(2, (v.SlotWidth / totalSpan) * W);
-    const win = v.Id === predId;
-    ctx.fillStyle   = win ? '#00ff8899' : 'rgba(55,60,130,0.45)';
-    ctx.strokeStyle = win ? '#00ff88'   : '#333388';
-    ctx.lineWidth   = win ? 1.5 : 0.5;
-    ctx.fillRect(sx, botY, sw, slotH);
-    ctx.strokeRect(sx, botY, sw, slotH);
-    if (win || sw > 18) {
-      ctx.fillStyle = win ? '#00ff88' : '#7788aa';
-      ctx.font      = win ? 'bold 11px Segoe UI' : '9px Segoe UI';
-      ctx.textAlign = 'center';
-      ctx.fillText((v.Text||'').trim(), sx + sw/2, labY);
-      ctx.textAlign = 'left';
+    const sx=MX+(v.SlotLeft/ts)*W, sw=Math.max(2,(v.SlotWidth/ts)*W);
+    const win=v.Id===pid;
+    X.fillStyle  = win ? '#00ff8888' : 'rgba(48,52,120,0.45)';
+    X.strokeStyle= win ? '#00ff88'   : '#1e1e60';
+    X.lineWidth  = win ? 1.5 : 0.5;
+    X.fillRect(sx,by,sw,sh); X.strokeRect(sx,by,sw,sh);
+    if (win||sw>16) {
+      X.fillStyle=win?'#00ff88':'#5566aa'; X.font=win?'bold 11px Segoe UI':'9px Segoe UI';
+      X.textAlign='center'; X.fillText((v.Text||'').trim(),sx+sw/2,ly); X.textAlign='left';
     }
   });
-  ctx.fillStyle = '#5566aa'; ctx.font = '9px Segoe UI';
-  ctx.fillText('output slots →', 4, labY);
+  X.fillStyle='#3344aa'; X.font='9px Segoe UI'; X.fillText('output slots →',4,ly);
 }
 
 function getPredId() {
-  if (!frames.length || !cfg) return -1;
-  const last = frames[frames.length - 1];
-  if (!last?.balls?.length) return -1;
-  const scores = new Array(cfg.vocab.length).fill(0);
-  const ts     = cfg.vocab[cfg.vocab.length - 1].SlotRight;
-  const lastRow  = cfg.totalRows - 1;
-  const gw   = gridWidth(lastRow);
-  const gl   = (cfg.maxWidth - gw) / 2;
-  const span = gw;
-  last.balls.forEach(b => {
-    if (b.TokenId < 0) return;
-    const norm = (b.Position - gl) / span * ts;
-    for (let t = 0; t < cfg.vocab.length; t++) {
-      if (norm >= cfg.vocab[t].SlotLeft && norm < cfg.vocab[t].SlotRight) { scores[t]++; break; }
-    }
+  if (!frames.length||!cfg) return -1;
+  const last=frames[frames.length-1]; if (!last?.balls?.length) return -1;
+  const sc=new Array(cfg.vocab.length).fill(0);
+  const ts=cfg.vocab[cfg.vocab.length-1].SlotRight;
+  const ri=cfg.totalRows-1; const gw=gridW(ri); const gl=(cfg.maxWidth-gw)/2;
+  last.balls.forEach(b=>{
+    if(b.TokenId<0)return;
+    const n=(b.Position-gl)/gw*ts;
+    for(let t=0;t<cfg.vocab.length;t++){ if(n>=cfg.vocab[t].SlotLeft&&n<cfg.vocab[t].SlotRight){sc[t]++;break;} }
   });
-  return scores.indexOf(Math.max(...scores));
-}
-
-// ── Active-row indicator ──────────────────────────────────────────────────────
-function drawRowLine() {
-  if (!frames.length) return;
-  const f = frames[curRow]; if (!f) return;
-  const y = toScreen(0, f.row).y;
-  ctx.save(); ctx.strokeStyle = 'rgba(200,210,255,0.22)';
-  ctx.lineWidth = 1.5; ctx.setLineDash([3,3]);
-  ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-  ctx.restore();
-  ctx.fillStyle = 'rgba(200,210,255,0.55)'; ctx.font = '10px Segoe UI';
-  ctx.fillText(`row ${f.row}`, 4, y - 3);
+  return sc.indexOf(Math.max(...sc));
 }
 
 connect();
