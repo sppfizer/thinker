@@ -42,6 +42,12 @@ public class DiamondConfig
     public float  DeflectionAlpha   { get; init; } = 0.8f;
 
     /// <summary>
+    /// Exponent applied to inverse mass during deflection routing.
+    /// 0 = flat, 0.5 = sqrt-IDF, 1 = inverse-mass.
+    /// </summary>
+    public float  DeflectionIdfPower { get; init; } = 0.0f;
+
+    /// <summary>
     /// Vertical-offset contribution to horizontal velocity (new in 2D nail model).
     /// Per-row velocity change = token_offY * αY * radius / mass.
     /// Small (0.1–0.3) lets the nail give multi-row momentum nudges.
@@ -80,4 +86,3 @@ public class DiamondConfig
     public static DiamondConfig Narrator        => new() { RoleName="Narrator",        WideningRows=12, NarrowingRows=12, DefaultRadius=0.45f };
     public static DiamondConfig Conversationalist => new() { RoleName="Conversationalist", WideningRows=14, NarrowingRows=7, DefaultRadius=0.3f };
 }
-

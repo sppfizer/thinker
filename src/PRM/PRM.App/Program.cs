@@ -352,11 +352,11 @@ static void RunOptimization(
 {
     var candidates = new[]
     {
-        new Candidate("baseline", 0.020f, 0.002f, 8, 8, 0.80f, 0.010f, 10f, 0.50f),
-        new Candidate("more-magnet", 0.035f, 0.004f, 10, 10, 0.90f, 0.012f, 12f, 0.45f),
-        new Candidate("tight-routes", 0.015f, 0.0015f, 12, 6, 0.75f, 0.008f, 8f, 0.70f),
-        new Candidate("broad-think", 0.012f, 0.0012f, 14, 8, 0.70f, 0.006f, 7f, 0.85f),
-        new Candidate("sharp-narrow", 0.025f, 0.003f, 6, 14, 0.95f, 0.014f, 14f, 0.35f),
+        new Candidate("baseline",     0.020f, 0.002f, 8, 8, 0.80f, 0.00f, 0.010f, 10f, 0.50f),
+        new Candidate("sqrt-idf",     0.025f, 0.0025f, 10, 10, 0.90f, 0.50f, 0.012f, 12f, 0.45f),
+        new Candidate("inverse-idf",  0.015f, 0.0015f, 12, 6, 0.75f, 1.00f, 0.008f, 8f, 0.70f),
+        new Candidate("broad-think",  0.012f, 0.0012f, 14, 8, 0.70f, 0.25f, 0.006f, 7f, 0.85f),
+        new Candidate("sharp-narrow", 0.025f, 0.003f, 6, 14, 0.95f, 0.75f, 0.014f, 14f, 0.35f),
     };
 
     Candidate? bestCandidate = null;
@@ -377,6 +377,7 @@ static void RunOptimization(
             EntryWidth = 20f,
             DefaultDiameter = cand.DefaultDiameter,
             DeflectionAlpha = cand.DeflectionAlpha,
+            DeflectionIdfPower = cand.DeflectionIdfPower,
             GravityG = cand.GravityG,
             ProximityBand = cand.ProximityBand,
             CollisionRadius = cand.CollisionRadius,
@@ -399,7 +400,7 @@ static void RunOptimization(
 
         Console.WriteLine(
             $"{cand.Name,-12} | trainLR={cand.LearningRate,6:F3} tuneLR={cand.TuneLearningRate,6:F4} " +
-            $"rows={cand.WideningRows,2}/{cand.NarrowingRows,2} alpha={cand.DeflectionAlpha,4:F2} " +
+            $"rows={cand.WideningRows,2}/{cand.NarrowingRows,2} alpha={cand.DeflectionAlpha,4:F2} idf={cand.DeflectionIdfPower,4:F2} " +
             $"grav={cand.GravityG,5:F3} diam={cand.DefaultDiameter,4:F2} -> " +
             $"val={valResult.metrics.Accuracy:P1} test={testResult.Accuracy:P1} conf={valResult.metrics.AvgConfidence:F3}");
 
@@ -472,6 +473,7 @@ static void SaveBestConfig(Candidate cand)
         EntryWidth = 20f,
         DefaultDiameter = cand.DefaultDiameter,
         DeflectionAlpha = cand.DeflectionAlpha,
+        DeflectionIdfPower = cand.DeflectionIdfPower,
         GravityG = cand.GravityG,
         ProximityBand = cand.ProximityBand,
         CollisionRadius = cand.CollisionRadius,

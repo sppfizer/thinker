@@ -265,10 +265,9 @@ public class BallSimulator
         float offY   = _tokenOffY[row, col, tIdx];
         float radius = _nails[row, col].Radius;
 
-        // No IDF scaling in deflection: all balls route by nail position alone.
-        // IDF belongs only in training updates (rare tokens get stronger nail nudges).
-        // With IDF in deflection, rare balls fly to extreme positions and miss all output slots.
-        float idf = 1f;
+        // Deflection routing can optionally weight by inverse mass.
+        // 0 = flat, 0.5 = sqrt-IDF, 1 = inverse-mass.
+        float idf = MathF.Pow(1f / Math.Max(ball.Mass, 0.01f), _cfg.DeflectionIdfPower);
 
         // Horizontal position change (width-normalised to prevent overshooting)
         float rowWidth  = Math.Max(GridWidth(row), 1f);
@@ -392,5 +391,4 @@ public class BallSimulator
             dst[r, c, t] = src[r, c, t];
     }
 }
-
 

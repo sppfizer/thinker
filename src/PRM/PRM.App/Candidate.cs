@@ -5,6 +5,7 @@ public record Candidate(
     int WideningRows,
     int NarrowingRows,
     float DeflectionAlpha,
+    float DeflectionIdfPower,
     float GravityG,
     float ProximityBand,
     float DefaultDiameter,

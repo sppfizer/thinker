@@ -21,7 +21,8 @@ public static class AutoOptimizer
         int   TrainEpochs,
         int   TuneEpochs,
         float WideningRatio = 0.70f,  // fraction of total rows that are widening (thinking)
-        int   TrainPasses   = 1);     // how many times to re-run the full training set before eval
+        int   TrainPasses   = 1,      // how many times to re-run the full training set before eval
+        float DeflectionIdfPower = 0f); // 0=flat, 0.5=sqrt-IDF, 1=inverse-mass
 
     // ── Entry point ───────────────────────────────────────────────────────────
 
@@ -70,7 +71,7 @@ public static class AutoOptimizer
             Console.WriteLine(
                 $"[{iter,4}] {arrow} val={valAcc:P1} test={testAcc:P1} | " +
                 $"rows={cand.Config.WideningRows}/{cand.Config.NarrowingRows}({cand.WideningRatio:P0}w) " +
-                $"α={cand.Config.DeflectionAlpha:F2} αY={cand.Config.DeflectionAlphaY:F2} " +
+                $"α={cand.Config.DeflectionAlpha:F2} idf={cand.Config.DeflectionIdfPower:F2} αY={cand.Config.DeflectionAlphaY:F2} " +
                 $"sp={cand.Config.NailSpacing:F1} r={cand.Config.DefaultRadius:F2} LR={cand.LR:F3} ep={cand.TrainEpochs}×{cand.TrainPasses}+{cand.TuneEpochs}" +
                 jumpTag);
 
@@ -202,6 +203,7 @@ public static class AutoOptimizer
         float radius    = cfg.DefaultRadius;
         float spacing   = cfg.NailSpacing;
         int   passes    = best.TrainPasses;
+        float idfPow    = cfg.DeflectionIdfPower;
 
         var pool = Enumerable.Range(0, 15).ToList();
         Shuffle(pool, rng);
@@ -243,6 +245,8 @@ public static class AutoOptimizer
                 case 13: spacing   = Clamp(spacing * f, 0.5f, 3.0f);             break;
                 // TrainPasses — multiple forward re-passes through the training set
                 case 14: passes    = Clamp((int)Math.Round(passes * f), 1, 5);   break;
+                // Deflection IDF power — 0 flat, 0.5 sqrt, 1 inverse-mass
+                case 15: idfPow    = Clamp(idfPow + d, 0.0f, 1.25f);            break;
             }
         }
 
@@ -257,6 +261,7 @@ public static class AutoOptimizer
             NarrowingRows    = nRows,
             DeflectionAlpha  = alpha,
             DeflectionAlphaY = alphaY,
+            DeflectionIdfPower = idfPow,
             GravityG         = grav,
             DefaultRadius    = radius,
             ProximityBand    = prox,
@@ -268,7 +273,7 @@ public static class AutoOptimizer
             InputWindowSize  = cfg.InputWindowSize,
         };
 
-        return new HyperParams(newCfg, lr, tuneLr, trEp, tuEp, wRatio, passes);
+        return new HyperParams(newCfg, lr, tuneLr, trEp, tuEp, wRatio, passes, idfPow);
     }
 
     private static HyperParams RandomRestart(Random rng, VocabToken[] vocab)
@@ -286,6 +291,7 @@ public static class AutoOptimizer
         int   minEp      = Math.Max(30, vocab.Length);
         int   maxEp      = Math.Max(200, vocab.Length * 3);
         int   passes     = rng.Next(1, vocab.Length > 60 ? 4 : 2);
+        float idfPow     = rng.NextSingle() * 1.25f;
 
         var cfg = new DiamondConfig
         {
@@ -293,6 +299,7 @@ public static class AutoOptimizer
             WideningRows     = wRows,
             NarrowingRows    = nRows,
             DeflectionAlpha  = rng.NextSingle() * 2.5f + 0.1f,
+            DeflectionIdfPower = idfPow,
             DeflectionAlphaY = rng.NextSingle() * 0.6f,
             GravityG         = rng.NextSingle() * 0.04f,
             DefaultRadius    = rng.NextSingle() * 0.9f + 0.05f,
@@ -305,7 +312,7 @@ public static class AutoOptimizer
         };
 
         float lr = rng.NextSingle() * 0.25f + 0.01f;
-        return new HyperParams(cfg, lr, lr / 8f, rng.Next(minEp, maxEp), rng.Next(0, 20), wRatio, passes);
+        return new HyperParams(cfg, lr, lr / 8f, rng.Next(minEp, maxEp), rng.Next(0, 20), wRatio, passes, idfPow);
     }
 
     // ── Config persistence ────────────────────────────────────────────────────
@@ -325,6 +332,7 @@ public static class AutoOptimizer
         int   nRows      = Math.Max(3, totalRows - wRows);
         int   trainEpoch = Math.Clamp(vocab.Length * 2, 80, 400);
         int   passes     = vocab.Length > 60 ? 2 : 1;  // multi-pass for larger vocab
+        float idfPow     = vocab.Length > 60 ? 0.5f : 0f;
 
         var cfg = new DiamondConfig
         {
@@ -333,6 +341,7 @@ public static class AutoOptimizer
             NarrowingRows    = nRows,
             DeflectionAlpha  = 0.6f,
             DeflectionAlphaY = 0.15f,
+            DeflectionIdfPower = idfPow,
             GravityG         = 0.01f,
             CollisionRadius  = 0.5f,
             ProximityBand    = 8f,
@@ -344,7 +353,8 @@ public static class AutoOptimizer
         };
         return new HyperParams(cfg, LR: 0.10f, TuneLR: 0.01f,
                                TrainEpochs: trainEpoch, TuneEpochs: 10,
-                               WideningRatio: wRatio, TrainPasses: passes);
+                               WideningRatio: wRatio, TrainPasses: passes,
+                               DeflectionIdfPower: idfPow);
     }
 
     private static void Save(DiamondConfig cfg)
@@ -360,7 +370,7 @@ public static class AutoOptimizer
         Console.WriteLine(
             $"{indent}rows={hp.Config.WideningRows}/{hp.Config.NarrowingRows}" +
             $"(ratio={hp.WideningRatio:P0} think) " +
-            $"α={hp.Config.DeflectionAlpha:F3} αY={hp.Config.DeflectionAlphaY:F3} " +
+            $"α={hp.Config.DeflectionAlpha:F3} idf={hp.Config.DeflectionIdfPower:F3} αY={hp.Config.DeflectionAlphaY:F3} " +
             $"g={hp.Config.GravityG:F4} radius={hp.Config.DefaultRadius:F3} " +
             $"sp={hp.Config.NailSpacing:F1} MaxW={hp.Config.MaxWidth:F0} " +
             $"LR={hp.LR:F4} ep={hp.TrainEpochs}×{hp.TrainPasses}+{hp.TuneEpochs}");

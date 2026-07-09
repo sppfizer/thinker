@@ -45,16 +45,16 @@ The grid is **diamond-shaped** with open borders:
 ```
   ● ● ● ● ●         ← input tokens (balls)
       ↓
-  ┌─────────┐        ← narrow entry
-   \       /
-    \     /          ← WIDENING: divergent thinking
-     \   /              (balls explore, can fall off edges)
-      \ /
-      / \
-     /   \           ← NARROWING: convergent summarization
-    /     \              (weak signals crowded out)
-  └─────────┘        ← narrow output
-  [vocab slots]
+     ● ● ●
+    /  ↓  \
+   / nails  \
+  /  grid    \
+  /            \
+  \   routes   /
+  \          /
+   \   ↓    /
+    \______/
+  narrow → wide → narrow
 ```
 
 - **Widening phase** = brainstorming, exploring meaning space
@@ -89,18 +89,25 @@ A **router diamond** (shallower, cheaper) selects the best role for each input. 
 | [`thinking-process.md`](./thinking-process.md) | Raw conversation log — how each design decision was reached, turn by turn |
 | [`PRM-Design.pptx`](./PRM-Design.pptx) | Slide deck version of the brainstorm and model summary |
 | [`PRM.sln`](./PRM.sln) | C# solution containing the PRM.Core library and PRM.App console app |
-| [`src/PRM`](./src/PRM) | Forward-only PRM prototype in C# with training, test, tune, val, benchmark, and optimize modes |
-| [`data/simple_corpus.txt`](./data/simple_corpus.txt) | Tiny toy corpus used for the training/test/tune/val benchmark |
+| [`src/PRM`](./src/PRM) | Forward-only PRM prototype in C# with training, test, tune, val, benchmark, optimize, autooptimize, and viz modes |
+| [`data/simple_corpus.txt`](./data/simple_corpus.txt) | Larger toy corpus used for training and optimizer sweeps |
 | [`prm_config.json`](./prm_config.json) | Persisted best diamond configuration from the optimizer |
 
 ---
 
 ## Status
 
-🟡 **Prototype** — design plus a runnable toy implementation.
+🟢 **Prototype** — design plus a runnable toy implementation and browser visualizer.
+
+Run the visualizer with:
+
+```bash
+cd src/PRM/PRM.App
+dotnet run -- viz the cat sat
+```
 
 Open questions remain (grid depth, nail initialization, force decay, training stabilization). The thinking continues.
 
 ---
 
-*Co-designed by sppfizer + GitHub Copilot (Claude Sonnet 4.6) — 2026-07-08*
+*Co-designed by sppfizer + GitHub Copilot (GPT-5.4 mini) — 2026-07-09*
