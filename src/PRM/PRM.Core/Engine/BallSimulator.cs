@@ -105,8 +105,8 @@ public class BallSimulator
                     ball.Position = (left + right) / 2f;
             }
 
-            // 5. Remove out-of-bounds
-            active.RemoveAll(b => b.Position < left || b.Position > right);
+            // 5. Thinking phase: bounce back inside. Summarizing phase: drop off.
+            ResolveBounds(active, row, left, right);
         }
 
         return active;
@@ -194,7 +194,7 @@ public class BallSimulator
                 if (float.IsNaN(ball.Position) || float.IsInfinity(ball.Position))
                     ball.Position = (left + right) / 2f;
             }
-            active.RemoveAll(b => b.Position < left || b.Position > right);
+            ResolveBounds(active, row, left, right);
         }
 
         // Final snapshot: positions after all rows (output positions)
@@ -216,6 +216,39 @@ public class BallSimulator
             RowNailCounts  = rowNailCounts,
             RowFrames      = rowFrames,
         };
+    }
+
+    /// <summary>
+    /// Post-fallthrough reinforcement: use the successful balls with the fewest bumps
+    /// to stiffen the nails they contacted during this sample.
+    /// </summary>
+    public int ReinforceContacts(IEnumerable<Ball> balls, float targetCentre, float learningRate)
+    {
+        var winners = balls
+            .Where(b => b.TokenId >= 0 && !b.Stuck && Math.Abs(b.Position - targetCentre) <= Math.Max(_cfg.NailSpacing * 0.6f, 0.5f))
+            .ToList();
+
+        if (winners.Count == 0) return 0;
+
+        int minContacts = winners.Min(b => b.ContactNailIds.Count);
+        var focus = winners.Where(b => b.ContactNailIds.Count == minContacts).ToList();
+        var uniqueNails = focus.SelectMany(b => b.ContactNailIds).Distinct().ToArray();
+
+        float massFactor = focus.Count > 0 ? focus.Average(b => MathF.Sqrt(Math.Max(b.Mass, 0.01f))) : 1f;
+        foreach (int nailId in uniqueNails)
+        {
+            int row = nailId / 10_000;
+            int col = nailId % 10_000;
+            if (row < 0 || row >= _nails.GetLength(0) || col < 0 || col >= _nails.GetLength(1)) continue;
+
+            var nail = _nails[row, col];
+            float boost = learningRate * massFactor * 0.05f;
+            nail.Resistance = Math.Clamp(nail.Resistance + boost, 0.05f, 2.5f);
+            nail.Density    = Math.Clamp(nail.Density + boost * 0.5f, 0.1f, 4.0f);
+            _nails[row, col] = nail;
+        }
+
+        return uniqueNails.Length;
     }
 
     // ── Grid geometry ─────────────────────────────────────────────────────────
@@ -261,9 +294,13 @@ public class BallSimulator
         if (col < 0 || col >= _rowCols[row]) return;
 
         int tIdx = TokenIndex(ball);
+        int nailId = NailKey(row, col);
         float offX   = _tokenOffX[row, col, tIdx];
         float offY   = _tokenOffY[row, col, tIdx];
         float radius = _nails[row, col].Radius;
+
+        if (ball.ContactNailIds.Count == 0 || ball.ContactNailIds[^1] != nailId)
+            ball.ContactNailIds.Add(nailId);
 
         // Deflection routing can optionally weight by inverse mass.
         // 0 = flat, 0.5 = sqrt-IDF, 1 = inverse-mass.
@@ -315,7 +352,10 @@ public class BallSimulator
             if (col < 0 || col >= _rowCols[row]) continue;
 
             int tIdx = TokenIndex(ball);
-            float resistance = _nails[row, col].Resistance;
+            var nail = _nails[row, col];
+            float resistance = nail.Resistance;
+            float density = Math.Max(nail.Density, 0.1f);
+            float radius = nail.Radius;
 
             // Magnet force along x-axis toward targetCentre
             float forceX = _magnet!.Force(row, ball.Position, targetCentre);
@@ -327,20 +367,36 @@ public class BallSimulator
             // Small y-axis component: helps build momentum toward target
             float normForceY = normForceX * 0.25f;
 
-            // IDF scaling: rare tokens (low mass) get stronger updates per sample
-            // because they are more discriminative — like TF-IDF in information retrieval
-            float idf    = 1f / Math.Max(ball.Mass, 0.01f);
-            float deltaX = lr * idf * normForceX / Math.Max(resistance, 0.01f);
-            float deltaY = lr * idf * normForceY / Math.Max(resistance, 0.01f);
+            // Punish larger angular faults more heavily so the next identical sample
+            // moves the nail in a way that reduces the same error.
+            float idealX = normForceX;
+            float idealY = normForceY;
+            float currentX = _tokenOffX[row, col, tIdx];
+            float currentY = _tokenOffY[row, col, tIdx];
+            float currentLen = MathF.Max(MathF.Sqrt(currentX * currentX + currentY * currentY), 1e-6f);
+            float idealLen   = MathF.Max(MathF.Sqrt(idealX * idealX + idealY * idealY), 1e-6f);
+            float dot = (currentX * idealX + currentY * idealY) / (currentLen * idealLen);
+            float anglePenalty = 1f + (1f - Math.Clamp(dot, -1f, 1f));
 
-            float newX = _tokenOffX[row, col, tIdx] + deltaX;
-            float newY = _tokenOffY[row, col, tIdx] + deltaY;
+            // Weight and nail inertia both influence how far the nail can move.
+            float massFactor = MathF.Sqrt(Math.Max(ball.Mass, 0.01f));
+            float inertia    = Math.Max(resistance * density * (1f + radius), 0.05f);
+            float deltaX = lr * massFactor * anglePenalty * normForceX / inertia;
+            float deltaY = lr * massFactor * anglePenalty * normForceY / inertia;
+
+            float newX = currentX + deltaX;
+            float newY = currentY + deltaY;
 
             // Project back onto the unit circle (the key constraint)
             ProjectUnitCircle(ref newX, ref newY);
 
             _tokenOffX[row, col, tIdx] = newX;
             _tokenOffY[row, col, tIdx] = newY;
+
+            // Strengthen the nail slightly when the current sample points to it.
+            nail.Resistance = Math.Clamp(nail.Resistance + lr * massFactor * 0.01f, 0.05f, 2.0f);
+            nail.Density    = Math.Clamp(nail.Density + lr * massFactor * 0.005f, 0.1f, 3.0f);
+            _nails[row, col] = nail;
         }
     }
 
@@ -390,5 +446,61 @@ public class BallSimulator
         for (int t = 0; t < t0; t++)
             dst[r, c, t] = src[r, c, t];
     }
-}
 
+    private void ResolveBounds(List<Ball> balls, int row, float left, float right)
+    {
+        float jamThreshold = Math.Max(_cfg.NailSpacing * 0.18f, 0.15f);
+        float velThreshold = 0.04f;
+
+        foreach (var ball in balls)
+        {
+            if (ball.Position < left)
+            {
+                if (row < _cfg.WideningRows)
+                {
+                    ball.Position = left + (left - ball.Position) * 0.35f;
+                    ball.Velocity = Math.Abs(ball.Velocity) * 0.55f;
+                }
+                else
+                {
+                    ball.Active = false;
+                }
+            }
+            else if (ball.Position > right)
+            {
+                if (row < _cfg.WideningRows)
+                {
+                    ball.Position = right - (ball.Position - right) * 0.35f;
+                    ball.Velocity = -Math.Abs(ball.Velocity) * 0.55f;
+                }
+                else
+                {
+                    ball.Active = false;
+                }
+            }
+
+            if (ball.Active && IsStuck(ball, row, jamThreshold, velThreshold))
+            {
+                ball.Stuck = true;
+                ball.Active = false;
+            }
+        }
+
+        balls.RemoveAll(b => !b.Active);
+    }
+
+    private bool IsStuck(Ball ball, int row, float jamThreshold, float velThreshold)
+    {
+        if (row < _cfg.WideningRows) return false;
+        if (Math.Abs(ball.Velocity) > velThreshold) return false;
+
+        int col = NailColumn(ball.Position, row);
+        if (col < 0 || col >= _rowCols[row]) return false;
+
+        float nailX = NailBaseX(row, col);
+        float dist = Math.Abs(ball.Position - nailX);
+        return dist <= jamThreshold;
+    }
+
+    private static int NailKey(int row, int col) => row * 10_000 + col;
+}

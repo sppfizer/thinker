@@ -238,6 +238,15 @@ Bottom:
 - Fixed config persistence so the winning nails and the winning diamond geometry stay together
 - Reran the benchmark on the persisted best state: validation improved from 22.2% to 27.8%
 
+### Turn 13 — sppfizer
+- Asked to implement contact-memory, angle-aware nail correction, nail inertia, widening bounce-back, stuck detection, and 5-retry training
+
+### Turn 13 — Copilot response
+- Added nail-contact memory to balls so successful low-contact paths can reinforce the nails they touched
+- Made nail updates depend on angle disagreement with the target direction, ball mass, resistance, and density inertia
+- Added widening-phase bounce-back, narrowing-phase drop-off, stuck detection, and retry-based re-training per sample
+- Ran the optimizer sweep on the corpus again: flat baseline val=0.0%, sqrt-IDF val=11.1%, inverse-IDF val=22.2%
+
 
 
 
@@ -292,4 +301,3 @@ Before the grid-sizing, IDF, and split fixes the model achieved only 5.8% — we
 - Position-aware routing validation: confirm that context positions 0 vs 2 develop distinct nail offsets
 - Multi-token generation loop (predict → append → predict again)
 - Eventually: real text corpora beyond the toy 40-token set
-

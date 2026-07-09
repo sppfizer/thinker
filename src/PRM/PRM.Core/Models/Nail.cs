@@ -17,16 +17,23 @@ namespace PRM.Core.Models;
 /// </summary>
 public struct Nail
 {
+    /// <summary>Unique nail id, stable within the grid (row/col encoded).</summary>
+    public int   Id          { get; set; }
+
     /// <summary>Nail size / influence radius in (0, 1].  Shared across all token types.</summary>
     public float Radius     { get; set; }
 
     /// <summary>Resistance to training updates in (0, 1].  Acts like the old Diameter/bias.</summary>
     public float Resistance { get; set; }
 
-    public Nail(float radius = 0.5f, float resistance = 0.5f)
+    /// <summary>Extra inertia / density term that slows nail movement during updates.</summary>
+    public float Density    { get; set; }
+
+    public Nail(int id = 0, float radius = 0.5f, float resistance = 0.5f, float density = 1.0f)
     {
+        Id          = id;
         Radius     = radius;
         Resistance = resistance;
+        Density    = density;
     }
 }
-

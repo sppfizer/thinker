@@ -6,7 +6,9 @@ public record TrainStepResult(
     int    Target,
     bool   Correct,
     string Role,
-    float  Confidence
+    float  Confidence,
+    int    Retries = 0,
+    int    Misses = 0
 );
 
 /// <summary>Result of a single test/val prediction.</summary>
@@ -24,9 +26,11 @@ public record EpochMetrics(
     int   Correct,
     float Accuracy,
     float AvgConfidence,
-    Dictionary<string, int> RoleActivationCounts
+    Dictionary<string, int> RoleActivationCounts,
+    int   Misses = 0,
+    int   Retries = 0
 )
 {
     public override string ToString() =>
-        $"Acc={Accuracy:P1}  AvgConf={AvgConfidence:F3}  Correct={Correct}/{Total}";
+        $"Acc={Accuracy:P1}  AvgConf={AvgConfidence:F3}  Correct={Correct}/{Total}  Misses={Misses}  Retries={Retries}";
 }

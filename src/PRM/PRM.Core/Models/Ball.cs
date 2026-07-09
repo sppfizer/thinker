@@ -10,6 +10,8 @@ public class Ball
     public float Mass            { get; init; }   // pre-computed from token frequency
     public int   EntryRow        { get; init; }   // row it was dropped at (always 0)
     public bool  Active          { get; set; } = true;
+    public bool  Stuck           { get; set; }
+    public List<int> ContactNailIds { get; } = [];
 
     public Ball(int tokenId, float position, float mass, int contextPosition = 0)
     {

@@ -31,19 +31,35 @@ public class TrainingMode
         {
             int total = 0, correct = 0;
             float totalConf = 0f;
+            int totalRetries = 0;
+            int totalMisses = 0;
             var roleCounts = new Dictionary<string, int>();
 
             foreach (var (inputIds, targetId) in dataset)
             {
-                var (predicted, isCorrect, role, conf) =
-                    _router.Train(inputIds, targetId, lr);
+                var (predicted, isCorrect, role, conf) = _router.Train(inputIds, targetId, lr);
+                int retries = 0;
+                int misses = isCorrect ? 0 : 1;
+
+                while (!isCorrect && retries < 5)
+                {
+                    retries++;
+                    var retried = _router.Train(inputIds, targetId, lr);
+                    predicted = retried.predicted;
+                    isCorrect = retried.correct;
+                    role = retried.role;
+                    conf = retried.confidence;
+                    if (isCorrect) misses = 0;
+                }
 
                 total++;
                 if (isCorrect) correct++;
                 totalConf += conf;
+                totalRetries += retries;
+                totalMisses += misses;
                 roleCounts[role] = roleCounts.GetValueOrDefault(role) + 1;
 
-                var result = new TrainStepResult(predicted, targetId, isCorrect, role, conf);
+                var result = new TrainStepResult(predicted, targetId, isCorrect, role, conf, retries, misses);
                 onStep?.Invoke(epoch, result);
             }
 
@@ -51,7 +67,9 @@ public class TrainingMode
                 total, correct,
                 total > 0 ? (float)correct / total : 0f,
                 total > 0 ? totalConf / total        : 0f,
-                roleCounts
+                roleCounts,
+                totalMisses,
+                totalRetries
             );
 
             // Apply learning rate decay after each epoch
@@ -59,4 +77,3 @@ public class TrainingMode
         }
     }
 }
-

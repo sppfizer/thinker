@@ -98,6 +98,8 @@ public class DiamondGrid
         var balls     = CreateBalls(inputTokenIds);
         var survivors = _simulator.Simulate(balls, targetCentre, learningRate);
         var (pred, conf) = Score(survivors, balls);
+        if (pred == targetTokenId)
+            _simulator.ReinforceContacts(survivors, targetCentre, learningRate);
         return (pred, pred == targetTokenId, conf);
     }
 
@@ -113,8 +115,10 @@ public class DiamondGrid
         for (int r = 0; r < _nails.GetLength(0); r++)
         for (int c = 0; c < _nails.GetLength(1); c++)
         {
+            bw.Write(_nails[r, c].Id);
             bw.Write(_nails[r, c].Radius);
             bw.Write(_nails[r, c].Resistance);
+            bw.Write(_nails[r, c].Density);
         }
 
         // Per-token 2D offsets (X)
@@ -144,8 +148,10 @@ public class DiamondGrid
             for (int r = 0; r < rows && r < _nails.GetLength(0); r++)
             for (int c = 0; c < cols && c < _nails.GetLength(1); c++)
             {
+                _nails[r, c].Id          = br.ReadInt32();
                 _nails[r, c].Radius     = br.ReadSingle();
                 _nails[r, c].Resistance = br.ReadSingle();
+                _nails[r, c].Density    = br.ReadSingle();
             }
 
             // Per-token offsets X
@@ -260,8 +266,10 @@ public class DiamondGrid
         for (int r = 0; r < _nails.GetLength(0); r++)
         for (int c = 0; c < _nails.GetLength(1); c++)
             _nails[r, c] = new Nail(
+                id:         r * 10000 + c,
                 radius:     Config.DefaultRadius,
-                resistance: Config.DefaultRadius  // resistance mirrors radius initially
+                resistance: Config.DefaultRadius,  // resistance mirrors radius initially
+                density:    1f + ((r + c) % 5) * 0.05f
             );
     }
 }

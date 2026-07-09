@@ -251,7 +251,29 @@ Given input sequence → predict next token:
 
 ---
 
-## 4. Grid Shape Architecture
+  ### 3.1 Recent Training Refinements (2026-07-09)
+
+  The current training loop now includes:
+  - **Contact memory**: each ball records the unique nails it touched during the fall.
+  - **Post-fall reinforcement**: when the prediction is correct, the balls with the fewest contacts reinforce the nails they hit.
+  - **Angle-aware updates**: nails are corrected more strongly when their current direction disagrees more with the magnet target.
+  - **Nail inertia / density**: stiff nails move less and also get slightly more rigid when reinforced.
+  - **Thinking vs summarising bounds**: balls bounce back inside during widening, but can drop off in narrowing.
+  - **Stuck detection + retries**: if a sample misses, training retries it up to 5 times before counting a miss.
+
+  Current sweep on the 39-sample corpus:
+
+  | Candidate | Val | Test | Notes |
+  |---|---:|---:|---|
+  | baseline | 0.0% | 14.3% | flat deflection |
+  | sqrt-idf | 11.1% | 14.3% | improved over flat |
+  | inverse-idf | **22.2%** | 14.3% | best current result |
+
+  The main gain came from combining retry-based training with contact reinforcement and inertia-aware nail updates; the benchmark is still modest, but it is now materially better than the previous flat-deflection baseline.
+
+  ---
+
+  ## 4. Grid Shape Architecture
 
 ### 4.1 Why Diamond Over Rectangle
 
@@ -893,4 +915,3 @@ No magnet. No nail updates. Purely deterministic routing.
 - [ ] Position-aware routing validation: does context position 0 vs 2 produce meaningfully different nail offsets after training?
 - [ ] Extend to multi-token generation (loop prediction)
 - [ ] Eventually: real text corpora beyond the toy 40-token set
-

@@ -25,20 +25,36 @@ public class TuneMode
         {
             int total = 0, correct = 0;
             float totalConf = 0f;
+            int totalRetries = 0;
+            int totalMisses = 0;
             var roleCounts = new Dictionary<string, int>();
 
             foreach (var (inputIds, targetId) in dataset)
             {
                 // Same as training but with reduced LR — thick nails barely move
-                var (predicted, isCorrect, role, conf) =
-                    _router.Train(inputIds, targetId, LearningRate);
+                var (predicted, isCorrect, role, conf) = _router.Train(inputIds, targetId, LearningRate);
+                int retries = 0;
+                int misses = isCorrect ? 0 : 1;
+
+                while (!isCorrect && retries < 5)
+                {
+                    retries++;
+                    var retried = _router.Train(inputIds, targetId, LearningRate);
+                    predicted = retried.predicted;
+                    isCorrect = retried.correct;
+                    role = retried.role;
+                    conf = retried.confidence;
+                    if (isCorrect) misses = 0;
+                }
 
                 total++;
                 if (isCorrect) correct++;
                 totalConf += conf;
+                totalRetries += retries;
+                totalMisses += misses;
                 roleCounts[role] = roleCounts.GetValueOrDefault(role) + 1;
 
-                var result = new TrainStepResult(predicted, targetId, isCorrect, role, conf);
+                var result = new TrainStepResult(predicted, targetId, isCorrect, role, conf, retries, misses);
                 onStep?.Invoke(epoch, result);
             }
 
@@ -46,7 +62,9 @@ public class TuneMode
                 total, correct,
                 total > 0 ? (float)correct / total : 0f,
                 total > 0 ? totalConf / total        : 0f,
-                roleCounts
+                roleCounts,
+                totalMisses,
+                totalRetries
             );
         }
     }

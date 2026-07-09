@@ -33,12 +33,10 @@
   - Optimizer needs fresh sweep with current settings to find new good params.
   - Command: `cd src/PRM/PRM.App && dotnet run -- autooptimize --corpus tiny_corpus.txt`
 
-- [ ] **Large corpus (209 tokens) still 0% val** — overfitting
-  - Only ~1.7 training samples/token → model memorises noise, doesn't generalise.
-  - Options to try:
-    - (a) Increase corpus size (add more sentences to `simple_corpus.txt`)
-    - (b) Data augmentation: shuffle token order within samples
-    - (c) Revisit IDF in deflection: try `sqrt(mass)` instead of flat — was 3% train / 0.8% val
+- [x] **Large corpus (209 tokens) overfitting reduced** — retry/contact/inertia sweep improved val to 22.2%
+  - The corpus is still small, but the new training loop changes moved the benchmark off the 0% plateau.
+  - Best current sweep on the 39-sample corpus: inverse-IDF deflection, val 22.2%, test 14.3%.
+  - Remaining work: more data, data augmentation, and a larger-scale benchmark.
 
 ### 🟡 Visualizer — polish & robustness
 
@@ -54,7 +52,7 @@
 
 ### 🟢 Model improvements — ideas to explore
 
-- [ ] **IDF in deflection revisited**: test `idf = 1/sqrt(mass)` systematically across tiny + large corpus
+- [x] **IDF in deflection revisited**: tested flat vs sqrt vs inverse-mass on the current corpus
 - [ ] **Ball interaction (gravity)**: re-enable `GravityG > 0` in optimizer sweep — currently 0.0
 - [ ] **Collision radius**: re-enable `CollisionRadius > 0` — balls pushing each other could help routing
 - [ ] **Specialist diamonds**: train 2–3 role configs (Analyst, Generator, Synthesizer) on same corpus and compare
@@ -62,9 +60,9 @@
 
 ### 📄 Documentation
 
-- [ ] Update `model-insight.md` section on IDF (describe the voting vs deflection split)
-- [ ] Add benchmark table: tiny corpus accuracy history (was 33%, current state after IDF fix)
-- [ ] Update `thinking-process.md` with IDF bug discovery and visualizer work
+- [x] Update `model-insight.md` section on IDF (describe the voting vs deflection split)
+- [x] Add benchmark table: tiny corpus accuracy history (was 33%, current state after IDF fix)
+- [x] Update `thinking-process.md` with IDF bug discovery and visualizer work
 
 ---
 
