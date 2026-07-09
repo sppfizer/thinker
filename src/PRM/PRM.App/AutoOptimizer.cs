@@ -1,4 +1,5 @@
 using PRM.Core.Engine;
+using PRM.Core.Engine.Flat;
 using PRM.Core.Models;
 using PRM.Core.Modes;
 using System.Text.Json;
@@ -57,7 +58,8 @@ public static class AutoOptimizer
         List<(int[] input, int target)>     valSet,
         List<(int[] input, int target)>     testSet,
         int   maxIterations = 500,
-        float targetAcc     = 0.60f)
+        float targetAcc     = 0.60f,
+        bool  useGpuTraining = false)
     {
         var window = trainSet.Count > 0 ? trainSet[0].input.Length : 3;
         var fixedSplits = new DatasetSplits(
@@ -76,6 +78,7 @@ public static class AutoOptimizer
             targetAcc,
             new SearchOptions(DefaultBatchSize, DefaultSurvivors, DefaultQuickEpochScale, DefaultQuickSampleFraction, 1f, 1f),
             allowWindowSearch: false,
+            useGpuTraining,
             title: "AUTO-OPTIMIZE");
     }
 
@@ -83,7 +86,8 @@ public static class AutoOptimizer
         VocabToken[] vocab,
         int[]        tokenIds,
         int          maxIterations = 500,
-        float        targetAcc     = 0.60f)
+        float        targetAcc     = 0.60f,
+        bool         useGpuTraining = false)
     {
         RunInternal(
             vocab,
@@ -93,6 +97,7 @@ public static class AutoOptimizer
             targetAcc,
             new SearchOptions(DefaultBatchSize, DefaultSurvivors, DefaultQuickEpochScale, DefaultQuickSampleFraction, 1f, 1f),
             allowWindowSearch: true,
+            useGpuTraining,
             title: "AUTO-OPTIMIZE");
     }
 
@@ -111,6 +116,7 @@ public static class AutoOptimizer
             targetAcc,
             new SearchOptions(BatchSize: 4, Survivors: 1, QuickEpochScale: 0.15f, QuickSampleFraction: 0.30f, FullEpochScale: 0.25f, FullSampleFraction: 0.50f),
             allowWindowSearch: true,
+            useGpuTraining: false,
             title: "OPTIMIZER WARMUP");
     }
 
@@ -122,11 +128,14 @@ public static class AutoOptimizer
         float           targetAcc,
         SearchOptions   options,
         bool            allowWindowSearch,
+        bool            useGpuTraining,
         string          title)
     {
         Console.WriteLine();
         Console.WriteLine(new string('═', 70));
         Console.WriteLine($"  {title}  target={targetAcc:P0}  max-iters={maxIterations}  batch={options.BatchSize}");
+        if (useGpuTraining)
+            Console.WriteLine("  training backend: GPU when candidate config is supported, CPU fallback otherwise");
         if (options.FullEpochScale < 1f || options.FullSampleFraction < 1f)
             Console.WriteLine($"  bounded: full-eval epochs={options.FullEpochScale:P0} samples={options.FullSampleFraction:P0}");
         Console.WriteLine(new string('═', 70));
@@ -141,7 +150,7 @@ public static class AutoOptimizer
         var currentParams = LoadBest(vocab);
         var currentSplits = SplitsFor(currentParams);
         var (currentVal, currentTest, currentGrid) =
-            TrainAndEval(currentParams, vocab, currentSplits, options.FullEpochScale, options.FullSampleFraction);
+            TrainAndEval(currentParams, vocab, currentSplits, options.FullEpochScale, options.FullSampleFraction, useGpuTraining: useGpuTraining);
 
         Console.WriteLine($"\nSTART  val={currentVal:P1}  test={currentTest:P1}  window={currentSplits.Window}");
         PrintParams(currentParams, "       ");
@@ -172,7 +181,8 @@ public static class AutoOptimizer
                     splits,
                     options.QuickEpochScale,
                     options.QuickSampleFraction,
-                    includeTest: false);
+                    includeTest: false,
+                    useGpuTraining);
                 probes.Add((cand, quickVal));
             }
 
@@ -194,7 +204,7 @@ public static class AutoOptimizer
                 var cand = probe.Params;
                 var splits = SplitsFor(cand);
                 var (valAcc, testAcc, grid) =
-                    TrainAndEval(cand, vocab, splits, options.FullEpochScale, options.FullSampleFraction);
+                    TrainAndEval(cand, vocab, splits, options.FullEpochScale, options.FullSampleFraction, useGpuTraining: useGpuTraining);
 
                 char arrow = valAcc > currentVal ? '↑' : valAcc < currentVal ? '↓' : '=';
                 string jumpTag = stuckFor >= 40 ? " [JUMP]" : stuckFor >= 20 ? " [nudge]" : "";
@@ -256,7 +266,8 @@ public static class AutoOptimizer
                         vocab,
                         restartSplits,
                         options.FullEpochScale,
-                        options.FullSampleFraction);
+                        options.FullSampleFraction,
+                        useGpuTraining: useGpuTraining);
                     Console.WriteLine($"       [RESTART] val={rv:P1}  test={rt:P1}");
                     stuckFor      = 0;
                     currentVal    = rv;
@@ -291,7 +302,8 @@ public static class AutoOptimizer
         DatasetSplits splits,
         float epochScale = 1f,
         float sampleFraction = 1f,
-        bool  includeTest = true)
+        bool  includeTest = true,
+        bool  useGpuTraining = false)
     {
         var grid   = new DiamondGrid(hp.Config, vocab, new Random(42));
         var router = new SpecialistRouter(new[] { grid });
@@ -310,14 +322,30 @@ public static class AutoOptimizer
         for (int pass = 0; pass < trainPasses; pass++)
         {
             float passLR = hp.LR * MathF.Pow(0.85f, pass); // slight LR decay between passes
-            var trainer = new TrainingMode(router) { LearningRate = passLR, EpochCount = trainEpochs, LrDecayPerEpoch = 0.97f };
-            foreach (var _ in trainer.Run(trainSet)) { }
+            if (useGpuTraining && FlatPrmGpuTrainingRunner.IsSupported(hp.Config, out _))
+            {
+                var trainer = new GpuTrainingMode(router) { LearningRate = passLR, EpochCount = trainEpochs, LrDecayPerEpoch = 0.97f };
+                foreach (var _ in trainer.Run(trainSet)) { }
+            }
+            else
+            {
+                var trainer = new TrainingMode(router) { LearningRate = passLR, EpochCount = trainEpochs, LrDecayPerEpoch = 0.97f };
+                foreach (var _ in trainer.Run(trainSet)) { }
+            }
         }
 
         if (tuneEpochs > 0)
         {
-            var tuner = new TuneMode(router) { LearningRate = hp.TuneLR, EpochCount = tuneEpochs };
-            foreach (var _ in tuner.Run(tuneSet)) { }
+            if (useGpuTraining && FlatPrmGpuTrainingRunner.IsSupported(hp.Config, out _))
+            {
+                var tuner = new GpuTrainingMode(router) { LearningRate = hp.TuneLR, EpochCount = tuneEpochs };
+                foreach (var _ in tuner.Run(tuneSet)) { }
+            }
+            else
+            {
+                var tuner = new TuneMode(router) { LearningRate = hp.TuneLR, EpochCount = tuneEpochs };
+                foreach (var _ in tuner.Run(tuneSet)) { }
+            }
         }
 
         float valAcc  = valSet.Count  > 0 ? new ValMode(router).Run(valSet).metrics.Accuracy : 0f;

@@ -294,9 +294,13 @@ switch (mode)
     // ── AUTOOPTIMIZE (real hill-climbing convergence loop) ────────────────
     case "autooptimize":
     {
-        int   maxIter = modeArgs.Length > 1 && int.TryParse(modeArgs[1], out var parsedIter) ? parsedIter : 500;
-        float target  = modeArgs.Length > 2 && float.TryParse(modeArgs[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsedTarget) ? parsedTarget : 0.60f;
-        AutoOptimizer.Run(vocab, tokenIds, maxIter, target);
+        bool useGpuTraining = modeArgs.Any(a => a.Equals("--gpu", StringComparison.OrdinalIgnoreCase));
+        var autoArgs = modeArgs.Skip(1)
+            .Where(a => !a.Equals("--gpu", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        int   maxIter = autoArgs.Length > 0 && int.TryParse(autoArgs[0], out var parsedIter) ? parsedIter : 500;
+        float target  = autoArgs.Length > 1 && float.TryParse(autoArgs[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsedTarget) ? parsedTarget : 0.60f;
+        AutoOptimizer.Run(vocab, tokenIds, maxIter, target, useGpuTraining);
         break;
     }
 

@@ -200,7 +200,7 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
             ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense>>(
                 FlatPrmGpuKernels.IntegrateAndResolveBoundsRow);
 
-        _sampleKernel = _accelerator.LoadAutoGroupedStreamKernel<
+        _sampleKernel = _accelerator.LoadImplicitlyGroupedStreamKernel<
             Index1D,
             FlatPrmGpuKernelConfig,
             int,
@@ -214,7 +214,8 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
             ArrayView1D<FlatPrmGpuNailProperties, Stride1D.Dense>,
             ArrayView1D<int, Stride1D.Dense>,
             ArrayView1D<FlatPrmGpuRowGeometry, Stride1D.Dense>>(
-                FlatPrmGpuKernels.RunTrainingSampleRows);
+                FlatPrmGpuKernels.RunTrainingSampleRowsGrouped,
+                _maxBalls);
 
         _postAdjustKernel = _accelerator.LoadAutoGroupedStreamKernel<
             Index1D,
@@ -246,7 +247,7 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
 
         float targetCentre = _grid.SlotCentreForFlatTraining(targetTokenId);
         _sampleKernel(
-            1,
+            _maxBalls,
             _gpuConfig,
             allBalls.Count,
             learningRate,
