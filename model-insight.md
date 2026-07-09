@@ -854,7 +854,7 @@ Total: `O(S · R · (B·k + C))` — no stored activation graph, no backward pas
 
 > `S` = batch size, `R` = total rows, `B` = surviving balls per row, `k` = avg gravity neighbours, `C` = nail columns per row.
 
-**2026-07-09 GPU finding:** ILGPU/OpenCL parity is working and `train --gpu` really uses the Intel Iris Xe OpenCL device. One-sample-at-a-time kernels underutilized the GPU, so training now supports mini-batches: many causal samples are packed into one launch, one workgroup handles each sample, shared offset updates use averaged atomic deltas, and a projection pass restores unit-circle constraints. Remaining GPU work is moving more scoring/replay bookkeeping and quality validation into batch-aware flows.
+**2026-07-09 GPU finding:** ILGPU/OpenCL parity is working and `train --gpu` really uses the Intel Iris Xe OpenCL device. One-sample-at-a-time kernels underutilized the GPU, so training now supports mini-batches: many causal samples are packed into one launch, one workgroup handles each sample, shared offset updates use averaged atomic deltas, and a projection pass restores unit-circle constraints. `--accumulate N` now queues multiple mini-batches into one effective batch before synchronization/readback (`effective = batch × accumulate`) while preserving the per-mini-batch update scale. Remaining GPU work is moving more scoring/replay bookkeeping and quality validation into batch-aware flows.
 
 ---
 
@@ -906,7 +906,7 @@ No magnet. No nail updates. Purely deterministic routing.
 
 - **Forward-only**: balls fall through grid while nails are nudged toward the target output slot (magnet force)
 - **No backpropagation** — nails update in-place during the single forward pass
-- **GPU path**: ILGPU/OpenCL supports flat nail deflection, gravity/collision interaction, velocity integration, bounds/stuck handling, live token/shared offset updates, GPU-resident nail property updates, and mini-batches via `--batch N`.
+- **GPU path**: ILGPU/OpenCL supports flat nail deflection, gravity/collision interaction, velocity integration, bounds/stuck handling, live token/shared offset updates, GPU-resident nail property updates, mini-batches via `--batch N`, and accumulated mini-batches via `--accumulate N`.
 - **Known GPU bottleneck**: scoring/replay orchestration is still partly CPU-side, and mini-batch averaged updates must be benchmarked against sequential updates for quality.
 - LR decay per epoch (default 0.97) prevents oscillation at the unit-circle boundary
 - Best-epoch nails saved and restored on validation drop (rollback)
@@ -954,6 +954,7 @@ No magnet. No nail updates. Purely deterministic routing.
 
 - [ ] Larger corpus (more tokens, more samples) to stress-test routing capacity
 - [x] Implement GPU mini-batch training so many samples run per launch and GPU utilization increases
+- [x] Accumulate multiple GPU mini-batches before synchronization/readback to make GPU spikes longer
 - [ ] Compare mini-batch averaged atomic updates against sequential updates for accuracy/regression risk
 - [ ] Verify ball-interaction (gravity now enabled) improves accuracy further
 - [ ] Position-aware routing validation: does context position 0 vs 2 produce meaningfully different nail offsets after training?

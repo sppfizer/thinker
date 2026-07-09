@@ -15,6 +15,7 @@ internal readonly struct FlatPrmGpuKernelConfig
     public readonly int TokenKeyCount;
     public readonly int RowStart;
     public readonly int RowCount;
+    public readonly int UpdateScaleDenominator;
     public readonly float NailSpacing;
     public readonly float DeflectionAlpha;
     public readonly float DeflectionAlphaY;
@@ -27,7 +28,7 @@ internal readonly struct FlatPrmGpuKernelConfig
     public readonly float DeltaTime;
     public readonly float MaxVelocity;
 
-    public FlatPrmGpuKernelConfig(FlatPrmKernelConfig config, int rowStart, int rowCount)
+    public FlatPrmGpuKernelConfig(FlatPrmKernelConfig config, int rowStart, int rowCount, int updateScaleDenominator = 0)
     {
         TotalRows = config.TotalRows;
         WideningRows = config.WideningRows;
@@ -38,6 +39,7 @@ internal readonly struct FlatPrmGpuKernelConfig
         TokenKeyCount = config.TokenKeyCount;
         RowStart = rowStart;
         RowCount = rowCount;
+        UpdateScaleDenominator = updateScaleDenominator;
         NailSpacing = config.NailSpacing;
         DeflectionAlpha = config.DeflectionAlpha;
         DeflectionAlphaY = config.DeflectionAlphaY;
@@ -1245,7 +1247,10 @@ internal static class FlatPrmGpuKernels
         int sampleBase = sampleIndex * maxBalls;
         int contactStride = ballCounts.IntLength * maxBalls;
         float targetCentre = targetCentres[sampleIndex];
-        float batchScale = 1f / XMath.Max(batchCount, 1);
+        int updateScaleDenominator = config.UpdateScaleDenominator > 0
+            ? config.UpdateScaleDenominator
+            : batchCount;
+        float batchScale = 1f / XMath.Max(updateScaleDenominator, 1);
 
         for (int row = 0; row < config.TotalRows; row++)
         {

@@ -85,7 +85,7 @@ public sealed class GpuTrainingMode
     {
         var results = new List<TrainStepResult>();
         var misses = new List<ReplaySample>();
-        int batchSize = Math.Max(1, _options.MiniBatchSize);
+        int batchSize = Math.Max(1, _options.EffectiveBatchSize);
         var pending = new List<(int[] inputIds, int targetId)>(batchSize);
 
         foreach (var (inputIds, targetId) in dataset)
@@ -218,7 +218,7 @@ public sealed class GpuTrainingMode
         for (int pass = 0; pass < ReplayCurriculum.MaxReplayPasses && currentMisses.Count > 0 && remainingBudget > 0 && replayLearningRate > 0f; pass++)
         {
             var stillMissing = new List<ReplaySample>();
-            int batchSize = Math.Max(1, _options.MiniBatchSize);
+            int batchSize = Math.Max(1, _options.EffectiveBatchSize);
             for (int start = 0; start < currentMisses.Count && remainingBudget > 0; start += batchSize)
             {
                 int count = Math.Min(Math.Min(batchSize, currentMisses.Count - start), remainingBudget);

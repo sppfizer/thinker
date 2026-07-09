@@ -21,7 +21,7 @@
 - [x] VizServer HTTP loop fix: `WaitForClientAsync` handles favicon → WebSocket connects reliably
 - [x] Coordinate fix: browser uses `grid.Config.MaxWidth` (post-scale) matching C# physics
 - [x] Fair causal context training: PRM now receives NN-comparable multi-token next-token samples, not fixed 3-token windows
-- [x] OpenCL GPU diagnostics and training: ILGPU backend with CPU/GPU parity checks, persistent GPU session, grouped per-ball sample kernel, mini-batch GPU training, and `train --gpu` / `autooptimize --gpu`
+- [x] OpenCL GPU diagnostics and training: ILGPU backend with CPU/GPU parity checks, persistent GPU session, grouped per-ball sample kernel, mini-batch and accumulated mini-batch GPU training, and `train --gpu` / `autooptimize --gpu`
 - [x] All artifacts pushed to `github.com/sppfizer/thinker`
 
 ---
@@ -34,6 +34,11 @@
   - Samples are packed into one OpenCL launch with one workgroup per sample.
   - Offset updates use averaged atomic deltas and a projection pass to avoid unsafe direct write races.
   - CLI: `dotnet run --project src/PRM/PRM.App -- train --gpu --batch 32`
+
+- [x] **Accumulate multiple GPU mini-batches**
+  - `--accumulate N` keeps more samples in one GPU session before synchronization/readback.
+  - Effective batch size is `--batch × --accumulate`, while update scale remains tied to the mini-batch size to avoid weakening each learning step too much.
+  - CLI: `dotnet run --project src/PRM/PRM.App -- gputrain 1 0.005 1.0 --batch 64 --accumulate 4`
 
 - [ ] **Re-run fair-context `autooptimize --gpu` with mini-batches**
   - Old 3-token-window best is invalid for NN comparison.
@@ -71,7 +76,7 @@
 - [x] Update `model-insight.md` section on IDF (describe the voting vs deflection split)
 - [x] Add benchmark table: tiny corpus accuracy history (was 33%, current state after IDF fix)
 - [x] Update `thinking-process.md` with IDF bug discovery and visualizer work
-- [x] Document GPU mini-batch training insight and current bottlenecks
+- [x] Document GPU mini-batch and accumulated-batch training insight and current bottlenecks
 
 ---
 

@@ -15,6 +15,8 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
     private readonly FlatPrmRowGeometry _geometry;
     private readonly FlatPrmGpuRunResult _run;
     private readonly int _maxBalls;
+    private readonly int _miniBatchSize;
+    private readonly int _accumulatedMiniBatches;
     private readonly int _batchCapacity;
     private readonly int _tokenRows;
     private readonly int _tokenColumns;
@@ -154,7 +156,9 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
         _config = FlatPrmKernelConfig.FromConfig(grid.Config, grid.Vocab.Length, _geometry.MaxColumns);
         _gpuConfig = new FlatPrmGpuKernelConfig(_config, 0, _config.TotalRows);
         _maxBalls = Math.Max(grid.Config.InputWindowSize + 1, 1);
-        _batchCapacity = Math.Clamp(options.MiniBatchSize, 1, 256);
+        _miniBatchSize = Math.Clamp(options.MiniBatchSize, 1, 256);
+        _accumulatedMiniBatches = Math.Clamp(options.AccumulatedMiniBatches, 1, 16);
+        _batchCapacity = _miniBatchSize * _accumulatedMiniBatches;
         _ballArray = new FlatPrmGpuBallState[_maxBalls];
         _contactArray = new int[_config.TotalRows * _maxBalls];
         _batchBallArray = new FlatPrmGpuBallState[_batchCapacity * _maxBalls];
@@ -193,7 +197,7 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
             UsedGpu: deviceInfo.IsGpu,
             UsedCpuFallback: false,
             Device: deviceInfo,
-            Message: $"Ran mini-batch flat GPU training on OpenCL device '{deviceInfo.Name}' (gpu={deviceInfo.IsGpu}, batch={_batchCapacity}).");
+            Message: $"Ran accumulated mini-batch flat GPU training on OpenCL device '{deviceInfo.Name}' (gpu={deviceInfo.IsGpu}, batch={_miniBatchSize}, accumulate={_accumulatedMiniBatches}, effective={_batchCapacity}).");
 
         _ballsBuffer = _accelerator.Allocate1D<FlatPrmGpuBallState>(_ballArray.Length);
         _batchBallsBuffer = _accelerator.Allocate1D<FlatPrmGpuBallState>(_batchBallArray.Length);
@@ -449,7 +453,7 @@ internal sealed class FlatPrmGpuTrainingSession : IDisposable
 
         _batchKernel(
             batchCount * _maxBalls,
-            _gpuConfig,
+            new FlatPrmGpuKernelConfig(_config, 0, _config.TotalRows, Math.Min(_miniBatchSize, batchCount)),
             batchCount,
             _maxBalls,
             learningRate,

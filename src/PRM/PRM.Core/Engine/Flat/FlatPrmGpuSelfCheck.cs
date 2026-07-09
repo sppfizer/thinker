@@ -337,6 +337,75 @@ public static class FlatPrmGpuSelfCheck
         }
     }
 
+    public static FlatPrmTrainingDirectionResult RunTrainingDirectionCheck()
+    {
+        var (config, geometry, inputs) = CreateDeterministicInputs();
+        const int row = 2;
+        const int sampleIndex = 2;
+        const float learningRate = 0.08f;
+
+        int[] lastNailColumns = CreateLastNailColumns(config, geometry, row, inputs.Positions);
+        int[] lastTokenIndices = CreateLastTokenIndices(config, inputs.ContextPositions, inputs.TokenIds);
+        int col = lastNailColumns[sampleIndex];
+        int tIdx = lastTokenIndices[sampleIndex];
+        int slot = FlatPrmCpuKernels.TokenSlot(config, inputs.TokenIds[sampleIndex]);
+        int offsetIndex = FlatPrmCpuKernels.TokenOffsetIndex(config, row, col, tIdx);
+
+        float initialOffsetX = inputs.TokenOffsetX[offsetIndex];
+        float rightTargetOffsetX = ApplyDirectionCheckUpdate(
+            config,
+            geometry,
+            row,
+            sampleIndex,
+            learningRate,
+            targetCentre: inputs.Positions[sampleIndex] + geometry.RowWidths[row],
+            inputs,
+            lastNailColumns,
+            lastTokenIndices,
+            offsetIndex);
+        float leftTargetOffsetX = ApplyDirectionCheckUpdate(
+            config,
+            geometry,
+            row,
+            sampleIndex,
+            learningRate,
+            targetCentre: inputs.Positions[sampleIndex] - geometry.RowWidths[row],
+            inputs,
+            lastNailColumns,
+            lastTokenIndices,
+            offsetIndex);
+
+        bool passed = rightTargetOffsetX > initialOffsetX && leftTargetOffsetX < initialOffsetX;
+        string message = passed
+            ? "Training direction check passed: right-side targets increase offX and left-side targets decrease offX."
+            : $"Training direction check failed for row={row}, col={col}, slot={slot}: initial={initialOffsetX}, right={rightTargetOffsetX}, left={leftTargetOffsetX}.";
+        return new FlatPrmTrainingDirectionResult(
+            passed,
+            initialOffsetX,
+            rightTargetOffsetX,
+            leftTargetOffsetX,
+            message);
+    }
+
+    public static bool TryRunTrainingDirectionCheck(out FlatPrmTrainingDirectionResult result)
+    {
+        try
+        {
+            result = RunTrainingDirectionCheck();
+            return result.Passed;
+        }
+        catch (Exception ex)
+        {
+            result = new FlatPrmTrainingDirectionResult(
+                Passed: false,
+                InitialOffsetX: 0f,
+                RightTargetOffsetX: 0f,
+                LeftTargetOffsetX: 0f,
+                Message: $"Training direction check was not run ({ex.GetType().Name}: {ex.Message}).");
+            return false;
+        }
+    }
+
     private static (
         FlatPrmKernelConfig Config,
         FlatPrmRowGeometry Geometry,
@@ -461,6 +530,47 @@ public static class FlatPrmGpuSelfCheck
         }
 
         return states;
+    }
+
+    private static float ApplyDirectionCheckUpdate(
+        FlatPrmKernelConfig config,
+        FlatPrmRowGeometry geometry,
+        int row,
+        int sampleIndex,
+        float learningRate,
+        float targetCentre,
+        FlatPrmParityInputs inputs,
+        int[] lastNailColumns,
+        int[] lastTokenIndices,
+        int offsetIndex)
+    {
+        float[] tokenOffsetX = inputs.TokenOffsetX.ToArray();
+        float[] tokenOffsetY = inputs.TokenOffsetY.ToArray();
+        float[] sharedOffsetX = inputs.SharedOffsetX.ToArray();
+        float[] sharedOffsetY = inputs.SharedOffsetY.ToArray();
+
+        FlatPrmCpuKernels.ApplyTrainingUpdateRowSample(
+            config,
+            geometry,
+            row,
+            sampleIndex,
+            learningRate,
+            targetCentre,
+            inputs.Positions,
+            inputs.Masses,
+            inputs.RelevanceWeights,
+            inputs.TokenIds,
+            lastNailColumns,
+            lastTokenIndices,
+            tokenOffsetX,
+            tokenOffsetY,
+            sharedOffsetX,
+            sharedOffsetY,
+            inputs.NailRadii,
+            inputs.NailResistances,
+            inputs.NailDensities);
+
+        return tokenOffsetX[offsetIndex];
     }
 
     private static FlatPrmArrayComparison CompareArrays(

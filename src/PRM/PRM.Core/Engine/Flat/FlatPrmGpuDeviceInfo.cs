@@ -72,3 +72,10 @@ public sealed record FlatPrmGpuFullTrainingParityResult(
     bool ActiveStateMatches,
     bool ContactStateMatches,
     string Message);
+
+public sealed record FlatPrmTrainingDirectionResult(
+    bool Passed,
+    float InitialOffsetX,
+    float RightTargetOffsetX,
+    float LeftTargetOffsetX,
+    string Message);

@@ -167,6 +167,7 @@ switch (mode)
         float lr = trainOptions.LearningRate ?? optimizerParams?.LR ?? 0.08f;
         float decay = trainOptions.Decay ?? 0.97f;
         int gpuBatchSize = Math.Clamp(trainOptions.GpuBatchSize ?? 16, 1, 256);
+        int gpuAccumulate = Math.Clamp(trainOptions.GpuAccumulatedBatches ?? 1, 1, 16);
         bool usingOptimizerSchedule = !smoke && optimizerParams is not null && !trainOptions.HasExplicitSchedule;
         int trainPasses = usingOptimizerSchedule ? Math.Max(1, optimizerParams!.TrainPasses) : 1;
         int tuneEpochs = usingOptimizerSchedule ? Math.Max(0, optimizerParams!.TuneEpochs) : 0;
@@ -183,7 +184,7 @@ switch (mode)
         {
             float passLR = lr * MathF.Pow(0.85f, pass);
             float curLR = passLR;
-            var gpuTrainer = new GpuTrainingMode(router, new FlatPrmGpuTrainingOptions(MiniBatchSize: gpuBatchSize))
+            var gpuTrainer = new GpuTrainingMode(router, new FlatPrmGpuTrainingOptions(MiniBatchSize: gpuBatchSize, AccumulatedMiniBatches: gpuAccumulate))
             {
                 LearningRate = passLR,
                 EpochCount = epochs,
@@ -199,7 +200,7 @@ switch (mode)
 
         if (tuneEpochs > 0 && !smoke)
         {
-            var gpuTuner = new GpuTrainingMode(router, new FlatPrmGpuTrainingOptions(MiniBatchSize: gpuBatchSize))
+            var gpuTuner = new GpuTrainingMode(router, new FlatPrmGpuTrainingOptions(MiniBatchSize: gpuBatchSize, AccumulatedMiniBatches: gpuAccumulate))
             {
                 LearningRate = tuneLR,
                 EpochCount = tuneEpochs
@@ -495,6 +496,12 @@ static void RunGpuDiagnostics()
             $"sharedX={fullSharedX.MaxDelta}, sharedY={fullSharedY.MaxDelta}, " +
             $"active={fullTrainingResult.ActiveStateMatches}, contacts={fullTrainingResult.ContactStateMatches}");
     }
+
+    FlatPrmGpuSelfCheck.TryRunTrainingDirectionCheck(out var directionResult);
+    Console.WriteLine(directionResult.Message);
+    Console.WriteLine(
+        $"Direction offsets: initial={directionResult.InitialOffsetX}, " +
+        $"rightTarget={directionResult.RightTargetOffsetX}, leftTarget={directionResult.LeftTargetOffsetX}");
 }
 
 static bool TryParseBrowserPlay(string json, VocabToken[] vocab, out int[] ids)
@@ -691,6 +698,7 @@ static TrainOptions ParseTrainOptions(string[] modeArgs)
     var positional = new List<string>();
     int warmupIterations = 0;
     int? gpuBatchSize = null;
+    int? gpuAccumulatedBatches = null;
     bool noOptimizer = false;
 
     for (int i = 1; i < modeArgs.Length; i++)
@@ -729,6 +737,18 @@ static TrainOptions ParseTrainOptions(string[] modeArgs)
                     Console.WriteLine("Ignoring --batch without an integer value.");
                 }
                 break;
+            case "--accumulate":
+            case "--accum":
+                if (i + 1 < modeArgs.Length && int.TryParse(modeArgs[i + 1], out var parsedAccumulatedBatches))
+                {
+                    gpuAccumulatedBatches = parsedAccumulatedBatches;
+                    i++;
+                }
+                else
+                {
+                    Console.WriteLine("Ignoring --accumulate without an integer value.");
+                }
+                break;
             default:
                 Console.WriteLine($"Ignoring unknown train option: {arg}");
                 break;
@@ -745,7 +765,7 @@ static TrainOptions ParseTrainOptions(string[] modeArgs)
         ? parsedDecay
         : null;
 
-    return new TrainOptions(epochs, lr, decay, Math.Clamp(warmupIterations, 0, 10), noOptimizer, positional.Count > 0, gpuBatchSize);
+    return new TrainOptions(epochs, lr, decay, Math.Clamp(warmupIterations, 0, 10), noOptimizer, positional.Count > 0, gpuBatchSize, gpuAccumulatedBatches);
 }
 
 static string LoadCorpus(string? filename = null)
@@ -928,7 +948,8 @@ public sealed record TrainOptions(
     int WarmupIterations,
     bool NoOptimizer,
     bool HasExplicitSchedule,
-    int? GpuBatchSize)
+    int? GpuBatchSize,
+    int? GpuAccumulatedBatches)
 {
-    public static TrainOptions Default { get; } = new(null, null, null, 0, false, false, null);
+    public static TrainOptions Default { get; } = new(null, null, null, 0, false, false, null, null);
 }

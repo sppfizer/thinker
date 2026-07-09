@@ -97,7 +97,7 @@ A **router diamond** (shallower, cheaper) selects the best role for each input. 
 
 ## Status
 
-🟡 **Fair-context training and mini-batch OpenCL GPU training are implemented; next bottleneck is larger-batch scoring/update quality.**
+🟡 **Fair-context training and accumulated mini-batch OpenCL GPU training are implemented; next bottleneck is GPU-resident scoring/replay and update-quality tuning.**
 
 ### How to run the optimizer (fresh start):
 
@@ -117,6 +117,7 @@ dotnet run --project src/PRM/PRM.App -- --corpus data/simple_corpus.txt autoopti
 cd C:\src\Claude\Thinker
 dotnet run --project src/PRM/PRM.App -- gpu
 dotnet run --project src/PRM/PRM.App -- train --gpu --batch 16
+dotnet run --project src/PRM/PRM.App -- gputrain 1 0.005 1.0 --batch 64 --accumulate 4
 ```
 
 ### How to visualize the trained model:
@@ -140,7 +141,8 @@ dotnet run --project src/PRM/PRM.App -- viz the cat sat
 | Nail update | error-correction form | natural equilibrium, no drift to ±1 |
 | GPU backend | ILGPU/OpenCL | works on Intel Iris Xe and should also target OpenCL-capable AMD/NVIDIA devices |
 | GPU mini-batch | `--batch N` | packs many samples per GPU launch; default is 16 |
-| Current GPU bottleneck | scoring/replay orchestration | still partly CPU-side; next step is larger batch scoring and quality comparison |
+| GPU accumulation | `--accumulate N` | queues multiple mini-batches before sync/readback; default is 1, effective batch = batch × accumulate |
+| Current GPU bottleneck | scoring/replay orchestration | still partly CPU-side; next step is GPU-resident scoring and quality comparison |
 
 ### Bug-fix history summary
 
